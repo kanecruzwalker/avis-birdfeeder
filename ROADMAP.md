@@ -142,14 +142,14 @@ These are not course requirements but represent the long-term vision:
 
 ---
 
-## Course Timeline Reference
+## Development Timeline
 
-| Week | Target |
-|------|--------|
-| Mar 13–20 | Dataset download, environment setup, hardware verification |
-| Mar 21–27 | Preprocessing pipeline (Phase 2) |
-| Mar 28–Apr 3 | Baseline models (Phase 3) |
-| Apr 4–10 | Pretrained backbone integration (Phase 4) |
-| Apr 11–17 | Fine-tuning, convergence curves |
-| Apr 18–24 | Agentic system, hardware deployment (Phase 5) |
-| Apr 25–May 1 | Report, demo, final submission (Phase 6) |
+| Phase | Description | Key Targets | Status |
+|-------|-------------|-------------|--------|
+| 1 | Repository scaffold | Module structure, schemas, CI, configs | ✅ |
+| 2 | Preprocessing pipelines | WAV → spectrogram, image normalize, dataset download | ⏳ |
+| 3 | Baseline models | KNN audio, SVM visual, fusion + notify implementation | ⏳ |
+| 4 | Pretrained model integration | BirdNET + EfficientNet fine-tuned on SD species | ⏳ |
+| 5 | Hardware deployment | Hailo inference, Pi cameras + mic, push notifications | ⏳ |
+| 6 | Evaluation and report | Metrics, confusion matrices, demo recording, submission | ⏳ |
+---
