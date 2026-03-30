@@ -34,8 +34,8 @@ on laptop with synthetic data — no hardware required.
 
 ### Audio
 - [ ] `scripts/download_datasets.py` — Xeno-canto San Diego subset
-- [ ] `src/audio/preprocess.py` — WAV → mono → normalize → mel spectrogram
-- [ ] `tests/audio/test_preprocess.py` — synthetic WAV input tests
+- [x] `src/audio/preprocess.py` — WAV → mono → normalize → mel spectrogram
+- [x] `tests/audio/test_preprocess.py` — synthetic WAV input tests
 - [ ] `docs/DATASETS.md` — document all dataset sources and preprocessing decisions
 
 ### Visual
@@ -147,7 +147,7 @@ These are not course requirements but represent the long-term vision:
 | Phase | Description | Key Targets | Status |
 |-------|-------------|-------------|--------|
 | 1 | Repository scaffold | Module structure, schemas, CI, configs | ✅ |
-| 2 | Preprocessing pipelines | WAV → spectrogram, image normalize, dataset download | ⏳ |
+| 2 | Preprocessing pipelines | WAV → spectrogram, image normalize, dataset download | 🔄 |
 | 3 | Baseline models | KNN audio, SVM visual, fusion + notify implementation | ⏳ |
 | 4 | Pretrained model integration | BirdNET + EfficientNet fine-tuned on SD species | ⏳ |
 | 5 | Hardware deployment | Hailo inference, Pi cameras + mic, push notifications | ⏳ |

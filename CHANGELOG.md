@@ -8,10 +8,30 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+---
+
+## [0.2.0] - Phase 2 Audio Preprocessing
+
+### Added
+- `src/audio/preprocess.py` — full WAV → mel spectrogram pipeline:
+  `load_wav`, `normalize`, `to_mel_spectrogram`, `preprocess_file`,
+  `preprocess_array` (PR #6)
+- `tests/audio/test_preprocess.py` — 31 unit tests, fully synthetic,
+  no hardware or real audio files required (PR #6)
+
+### Fixed
+- CI workflow now installs from `requirements.txt` so librosa and all
+  runtime dependencies are available during test runs (PR #6)
+- Removed unused `librosa.display` import from `preprocess.py` (PR #6)
+
+
+---
+
+## [0.1.1] - CI and Docs Cleanup
+
 ### Added
 - `ROADMAP.md` — full 6-phase development plan with status tracking (PR #4)
 - `docs/ONBOARDING.md` — contributor setup guide for new team members (PR #1)
-- `docs/CLAUDE_CONTEXT` — replaced by private session gist for context handoff
 - GitHub Actions CI workflow — lint + format + tests on every PR (PR #2)
 - `.github/pull_request_template.md` — structured PR checklist (PR #2)
 
