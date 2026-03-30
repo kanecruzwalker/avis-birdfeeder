@@ -40,8 +40,8 @@ on laptop with synthetic data — no hardware required.
 
 ### Visual
 - [ ] `scripts/download_nabirds.py` — NABirds San Diego species subset
-- [ ] `src/vision/preprocess.py` — resize → normalize → augment (PIL/torchvision)
-- [ ] `tests/vision/test_preprocess.py` — synthetic image input tests
+- [x] `src/vision/preprocess.py` — resize → normalize → augment (PIL/torchvision)
+- [x] `tests/vision/test_preprocess.py` — synthetic image input tests
 
 ### Data
 - [ ] Expand `configs/species.yaml` from 15 → full SD region species list

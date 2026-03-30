@@ -10,6 +10,19 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.2.1] — Phase 2 Vision Preprocessing
+
+### Added
+- `src/vision/preprocess.py` — full image preprocessing pipeline:
+  `load_image`, `resize`, `normalize`, `augment`, `preprocess_frame`,
+  `preprocess_file` (PR #8)
+- `tests/vision/test_preprocess.py` — 40 unit tests, fully synthetic,
+  no hardware or real image files required (PR #8)
+- Output is HWC float32 (224, 224, 3), ImageNet-normalized — CHW
+  transpose deferred to classify.py in Phase 4
+
+---
+
 ## [0.2.0] - Phase 2 Audio Preprocessing
 
 ### Added
