@@ -1,0 +1,50 @@
+# configs/thresholds.yaml
+#
+# Tunable detection and classification thresholds.
+# Adjust these values to tune system sensitivity without touching source code.
+#
+# All thresholds are in the range [0.0, 1.0] unless otherwise noted.
+
+agent:
+  # Minimum fused confidence to trigger a notification and log entry.
+  # Lower = more sensitive (more false positives). Higher = more conservative.
+  confidence_threshold: 0.70
+
+  # Seconds to wait between agent cycles when no bird is detected.
+  # Reduce for faster response; increase to lower CPU load.
+  loop_interval_seconds: 1.0
+
+  # Seconds to suppress repeated notifications for the same species.
+  # Prevents notification spam when a bird stays at the feeder.
+  cooldown_seconds: 30.0
+
+audio:
+  # Duration of each audio capture window in seconds.
+  # BirdNET was trained on 3-second clips — do not change without retraining.
+  window_seconds: 3.0
+
+  # Target sample rate in Hz. BirdNET expects 48000.
+  sample_rate: 48000
+
+  # Minimum RMS energy to consider a window "active" (bird may be vocalizing).
+  # Windows below this threshold are skipped before running the classifier.
+  # Range: [0.0, 1.0] — tune based on ambient noise at deployment site.
+  energy_threshold: 0.01
+
+vision:
+  # Model input resolution (width x height). EfficientNet-B0 expects 224x224.
+  input_width: 224
+  input_height: 224
+
+  # Minimum motion score (pixel diff from background) to trigger frame capture.
+  # Prevents classifying empty frames when no bird is present.
+  motion_threshold: 0.05
+
+fusion:
+  # Fusion strategy: "equal" | "weighted" | "max"
+  strategy: "weighted"
+
+  # Per-modality weights (must sum to 1.0). Only used when strategy is "weighted".
+  # Audio is weighted slightly higher because BirdNET is highly specialized.
+  audio_weight: 0.55
+  visual_weight: 0.45

@@ -1,0 +1,58 @@
+# configs/paths.yaml
+#
+# All file system paths used by the Avis system.
+# Never hardcode paths in src/ — always read from here.
+#
+# Paths starting with "data/" are relative to the project root.
+# They are excluded from version control via .gitignore.
+# Run `python scripts/download_datasets.py` to populate them.
+
+datasets:
+  # Raw downloaded audio recordings (WAV files from Xeno-canto)
+  xeno_canto_raw: "data/raw/xeno_canto"
+
+  # Raw downloaded images (NABirds)
+  nabirds_raw: "data/raw/nabirds"
+
+  # Raw downloaded images (CUB-200-2011)
+  cub200_raw: "data/raw/cub200"
+
+  # Preprocessed mel spectrograms (output of audio preprocessing pipeline)
+  spectrograms: "data/processed/spectrograms"
+
+  # Preprocessed normalized images (output of vision preprocessing pipeline)
+  images_processed: "data/processed/images"
+
+  # Train / val / test split manifests (CSV files listing file paths + labels)
+  splits: "data/splits"
+
+models:
+  # BirdNET pretrained weights (downloaded from GitHub)
+  birdnet_pretrained: "models/birdnet/BirdNET_GLOBAL_6K_V2.4_Model_FP32.tflite"
+
+  # Fine-tuned audio model checkpoint
+  audio_finetuned: "models/audio/finetuned_sdbirds.pt"
+
+  # Fine-tuned visual model checkpoint
+  visual_finetuned: "models/visual/finetuned_sdbirds.pt"
+
+  # Hailo-compiled model files (.hef) for Pi deployment
+  audio_hef: "models/hailo/audio_birdnet.hef"
+  visual_hef: "models/hailo/visual_efficientnet.hef"
+
+  # Species label map (JSON: index → species_code)
+  label_map: "models/label_map.json"
+
+logs:
+  # JSONL observation log (one JSON object per line, appended continuously)
+  observations: "logs/observations.jsonl"
+
+  # Agent runtime log
+  agent: "logs/agent.log"
+
+captures:
+  # Saved image frames from bird detections
+  images: "data/captures/images"
+
+  # Saved audio clips from bird detections
+  audio: "data/captures/audio"
