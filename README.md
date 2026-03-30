@@ -95,7 +95,7 @@ Both team members contribute across all modules. See [docs/CONTRIBUTING.md](docs
 | Name | GitHub |
 |------|--------|
 | Kane Cruz-Walker | kanecruzwalker |
-| Daniel Wen | @DANIEL_HANDLE |
+| Daniel Wen | @DANIEL_HANDLE <- TODO |
 
 
 ## Academic context
