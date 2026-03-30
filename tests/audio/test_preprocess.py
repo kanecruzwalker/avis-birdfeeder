@@ -305,15 +305,16 @@ class TestToMelSpectrogram:
 
     def test_silent_audio_produces_uniform_low_db_spectrogram(self) -> None:
         """
-    A silent clip (all-zeros after normalize) produces a uniform spectrogram.
+        A silent clip (all-zeros after normalize) produces a uniform spectrogram.
 
-    normalize() returns all-zeros for a silent clip. librosa's power_to_db
-    on an all-zero array uses 0.0 as the reference (since max is 0), which
-    results in a uniform 0.0 dB spectrogram rather than -top_db. This is
-    librosa's defined behavior for zero-power input and is handled correctly
-    downstream — the energy_threshold check in the agent will reject this
-    clip before it reaches the classifier.
-    """
+        normalize() returns all-zeros for a silent clip. librosa's power_to_db
+        on an all-zero array uses 0.0 as the reference (since max is 0), which
+        results in a uniform 0.0 dB spectrogram rather than -top_db. This is
+        librosa's defined behavior for zero-power input and is handled correctly
+        downstream — the energy_threshold check in the agent will reject this
+        clip before it reaches the classifier.
+        """
+
     audio = normalize(_silent_array())
     spec = to_mel_spectrogram(audio, sample_rate=_SR)
     # All values should be uniform (either all 0.0 or all -top_db).
