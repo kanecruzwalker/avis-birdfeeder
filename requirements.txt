@@ -1,0 +1,39 @@
+# Runtime dependencies for Avis.
+# Pin exact versions for reproducibility across machines.
+# Update version pins when upgrading — don't leave ranges in production.
+#
+# Install: pip install -r requirements.txt
+
+# ── Data validation / schema ─────────────────────────────────────────────────
+pydantic==2.7.1            # BirdObservation and ClassificationResult schemas
+
+# ── Config loading ────────────────────────────────────────────────────────────
+pyyaml==6.0.1              # Load configs/*.yaml files
+
+# ── Audio processing (Phase 2) ────────────────────────────────────────────────
+librosa==0.10.2            # WAV loading, mel spectrogram generation
+sounddevice==0.4.7         # Microphone capture (USB mic on Pi)
+soundfile==0.12.1          # WAV file I/O (required by librosa on some platforms)
+
+# ── Image processing (Phase 2) ───────────────────────────────────────────────
+Pillow==10.3.0             # Image resizing and format conversion
+numpy==1.26.4              # Array operations across all pipelines
+
+# ── Machine learning (Phase 4) ───────────────────────────────────────────────
+torch==2.3.0               # PyTorch — model training and CPU inference
+torchvision==0.18.0        # EfficientNet / MobileNet pretrained weights + transforms
+timm==1.0.3                # Additional pretrained vision models (EfficientNet variants)
+
+# ── BirdNET integration (Phase 4) ────────────────────────────────────────────
+# BirdNET-Analyzer is installed from GitHub source in Phase 4.
+# Uncomment when ready:
+# birdnetlib==0.9.0         # Python wrapper for BirdNET-Analyzer
+
+# ── Environment variables ─────────────────────────────────────────────────────
+python-dotenv==1.0.1       # Load .env file into os.environ
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+# Standard library logging is used — no extra dependency needed.
+
+# ── Hailo inference (Pi only — install separately, see docs/SETUP.md) ─────────
+# hailort                   # Installed via Hailo's own installer, not pip

@@ -1,0 +1,29 @@
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+]
+ignore = [
+    "B008",  # do not perform function calls in argument defaults
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B", "E501"]  # relax in tests
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "hardware: marks tests that require physical hardware (deselect with -m 'not hardware')",
+    "requires_model: marks tests that require downloaded model weights",
+    "slow: marks tests that are slow to run",
+]
+# Skip hardware and model tests in CI by default
+addopts = "-m 'not hardware and not requires_model'"

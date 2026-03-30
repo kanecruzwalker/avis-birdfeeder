@@ -1,0 +1,21 @@
+# Development dependencies — linting, formatting, testing.
+# Not needed on the Pi deployment. Install locally and in CI only.
+#
+# Install: pip install -r requirements-dev.txt
+
+-r requirements.txt        # Include all runtime deps
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+pytest==8.2.0              # Test runner
+pytest-cov==5.0.0          # Coverage reporting
+pytest-mock==3.14.0        # Mocking hardware and model calls in tests
+
+# ── Linting and formatting ────────────────────────────────────────────────────
+ruff==0.4.4                # Linter + formatter (replaces flake8, isort, black)
+
+# ── Type checking (optional but recommended) ──────────────────────────────────
+mypy==1.10.0               # Static type checker
+
+# ── Notebooks ─────────────────────────────────────────────────────────────────
+jupyter==1.0.0             # Jupyter notebook support for EDA and training
+ipykernel==6.29.4          # Jupyter kernel

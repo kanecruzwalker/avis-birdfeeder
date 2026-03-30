@@ -1,0 +1,64 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Environment variables ─────────────────────────────────────────────────────
+.env
+# Keep .env.example committed — it documents required variables.
+
+# ── Datasets (large — download separately via scripts/download_datasets.py) ───
+data/raw/
+data/processed/
+data/splits/
+data/captures/
+
+# ── Model weights (large — tracked separately or downloaded) ──────────────────
+models/*.pt
+models/*.pth
+models/*.tflite
+models/*.hef
+models/*.onnx
+# Keep model cards and label_map.json committed:
+!models/label_map.json
+!models/**/*.md
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+logs/
+*.log
+
+# ── Jupyter ───────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+notebooks/.ipynb_checkpoints/
+
+# ── Testing and coverage ──────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# ── Ruff / linting cache ──────────────────────────────────────────────────────
+.ruff_cache/
+
+# ── OS files ──────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
