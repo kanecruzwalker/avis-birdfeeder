@@ -1,0 +1,78 @@
+# configs/species.yaml
+#
+# San Diego region bird species list.
+# This file is the single source of truth for which species the system
+# recognizes. All dataset filtering, model output labels, and UI display
+# names are derived from this list.
+#
+# Format per entry:
+#   code:            4-letter banding code (AOU standard)
+#   common_name:     human-readable name
+#   scientific_name: binomial Latin name
+#
+# Source: eBird San Diego County species list + local Audubon records.
+# This is a representative starting set — expand as datasets are filtered.
+
+species:
+  - code: AMRO
+    common_name: "American Robin"
+    scientific_name: "Turdus migratorius"
+
+  - code: HOFI
+    common_name: "House Finch"
+    scientific_name: "Haemorhous mexicanus"
+
+  - code: MOCH
+    common_name: "Northern Mockingbird"
+    scientific_name: "Mimus polyglottos"
+
+  - code: ANHU
+    common_name: "Anna's Hummingbird"
+    scientific_name: "Calypte anna"
+
+  - code: MODO
+    common_name: "Mourning Dove"
+    scientific_name: "Zenaida macroura"
+
+  - code: CAVI
+    common_name: "California Scrub-Jay"
+    scientific_name: "Aphelocoma californica"
+
+  - code: BCCH
+    common_name: "Black-capped Chickadee"
+    scientific_name: "Poecile atricapillus"
+
+  - code: WREN
+    common_name: "House Wren"
+    scientific_name: "Troglodytes aedon"
+
+  - code: YWAR
+    common_name: "Yellow Warbler"
+    scientific_name: "Setophaga petechia"
+
+  - code: SOSP
+    common_name: "Song Sparrow"
+    scientific_name: "Melospiza melodia"
+
+  - code: LEGO
+    common_name: "Lesser Goldfinch"
+    scientific_name: "Spinus psaltria"
+
+  - code: CEDW
+    common_name: "Cedar Waxwing"
+    scientific_name: "Bombycilla cedrorum"
+
+  - code: NOCA
+    common_name: "Northern Cardinal"
+    scientific_name: "Cardinalis cardinalis"
+
+  - code: DOWO
+    common_name: "Downy Woodpecker"
+    scientific_name: "Dryobates pubescens"
+
+  - code: WTSP
+    common_name: "White-throated Sparrow"
+    scientific_name: "Zonotrichia albicollis"
+
+# TODO (Phase 2): Expand this list based on iNaturalist SD data export.
+# Filter to species with >= 50 research-grade observations for training viability.

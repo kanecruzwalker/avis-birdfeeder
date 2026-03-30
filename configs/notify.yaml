@@ -1,0 +1,23 @@
+# configs/notify.yaml
+#
+# Notification channel configuration.
+# Toggle channels here — never in source code.
+# Credentials and secrets belong in .env, not here.
+
+channels:
+  # Always-on: JSON log file (controlled by configs/paths.yaml)
+  log: true
+
+  # Console print — useful during development and live demos
+  print: true
+
+  # Mobile push notification (requires Phase 5 setup + .env credentials)
+  push: false
+
+  # Email notification (requires Phase 5 setup + .env credentials)
+  email: false
+
+display:
+  # Format for console/notification output
+  # Available variables: {common_name}, {scientific_name}, {confidence}, {timestamp}
+  message_template: "🐦 {common_name} ({scientific_name}) detected! Confidence: {confidence:.0%}"
