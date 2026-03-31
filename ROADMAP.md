@@ -28,25 +28,29 @@
 
 ---
 
-## ⏳ Phase 2 — Preprocessing Pipelines
+## ✅ Phase 2 — Preprocessing Pipelines
 **Goal:** Both audio and visual data pipelines fully implemented and tested
 on laptop with synthetic data — no hardware required.
 
 ### Audio
-- [ ] `scripts/download_datasets.py` — Xeno-canto San Diego subset
 - [x] `src/audio/preprocess.py` — WAV → mono → normalize → mel spectrogram
-- [x] `tests/audio/test_preprocess.py` — synthetic WAV input tests
-- [ ] `docs/DATASETS.md` — document all dataset sources and preprocessing decisions
+- [x] `tests/audio/test_preprocess.py` — synthetic WAV input tests (PR #6)
+- [x] `scripts/download_datasets.py` — Xeno-canto SD subset via API (PR #11)
 
 ### Visual
-- [ ] `scripts/download_nabirds.py` — NABirds San Diego species subset
-- [x] `src/vision/preprocess.py` — resize → normalize → augment (PIL/torchvision)
-- [x] `tests/vision/test_preprocess.py` — synthetic image input tests
+- [x] `src/vision/preprocess.py` — resize → normalize → augment (PR #8)
+- [x] `tests/vision/test_preprocess.py` — synthetic image input tests (PR #8)
 
 ### Data
-- [ ] Expand `configs/species.yaml` from 15 → full SD region species list
-- [ ] `src/data/downloader.py` — implement dataset fetch and cache utilities
-- [ ] Train/val/test split generation (60/20/20)
+- [x] `configs/species.yaml` — expanded to 20 SD region species (PR #11)
+- [x] `src/data/downloader.py` — dataset fetch and cache utilities (PR #11)
+- [x] `src/data/splitter.py` — train/val/test split generation 60/20/20 (PR #12)
+- [x] `docs/DATASETS.md` — dataset sources and preprocessing decisions
+- [x] Verified live: ANHU audio download, NABirds visual splits (3342 images)
+
+### Known issues carried into Phase 3
+- CAVI has no NABirds visual data (pre-AOU-split dataset)
+- Full Xeno-canto download (all 20 species) not yet run — run before Phase 3
 
 ---
 
@@ -147,7 +151,7 @@ These are not course requirements but represent the long-term vision:
 | Phase | Description | Key Targets | Status |
 |-------|-------------|-------------|--------|
 | 1 | Repository scaffold | Module structure, schemas, CI, configs | ✅ |
-| 2 | Preprocessing pipelines | WAV → spectrogram, image normalize, dataset download | 🔄 |
+| 2 | Preprocessing pipelines | WAV → spectrogram, image normalize, dataset download | ✅ |
 | 3 | Baseline models | KNN audio, SVM visual, fusion + notify implementation | ⏳ |
 | 4 | Pretrained model integration | BirdNET + EfficientNet fine-tuned on SD species | ⏳ |
 | 5 | Hardware deployment | Hailo inference, Pi cameras + mic, push notifications | ⏳ |
