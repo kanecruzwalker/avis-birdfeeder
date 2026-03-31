@@ -48,3 +48,13 @@ fusion:
   # Audio is weighted slightly higher because BirdNET is highly specialized.
   audio_weight: 0.55
   visual_weight: 0.45
+
+splits:
+  # Train / val / test split ratios. Must sum to < 1.0 — remainder is test.
+  train_ratio: 0.6
+  val_ratio: 0.2
+  # test_ratio is implicit: 1.0 - train_ratio - val_ratio = 0.2
+
+  # Fixed seed for reproducible splits. Never change after splits are generated
+  # for the first time — changing it invalidates all existing trained models.
+  random_seed: 42
