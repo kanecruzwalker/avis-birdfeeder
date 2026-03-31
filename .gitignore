@@ -30,6 +30,7 @@ data/captures/
 # ── Model weights (large — tracked separately or downloaded) ──────────────────
 models/*.pt
 models/*.pth
+models/**/*.pkl
 models/*.tflite
 models/*.hef
 models/*.onnx
