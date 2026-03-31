@@ -86,8 +86,6 @@ avis-birdfeeder/
 
 ## Contributing
 
-## Contributing
-
 Both team members contribute across all modules. See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for branch naming, PR, and commit conventions, and [docs/ONBOARDING.md](docs/ONBOARDING.md) for full environment setup and onboarding instructions.
 
 ## Team
