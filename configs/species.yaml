@@ -10,45 +10,36 @@
 #   common_name:     human-readable name
 #   scientific_name: binomial Latin name
 #
-# Source: eBird San Diego County species list + local Audubon records.
-# This is a representative starting set — expand as datasets are filtered.
+# Source: eBird San Diego County frequency data, San Diego Field Ornithologists
+# checklist, and Greg Gillson's San Diego backyard bird surveys.
+# Criteria: year-round or seasonal resident with regular feeder/backyard
+# presence and sufficient XC recordings for training (50+ expected).
 
 species:
-  - code: AMRO
-    common_name: "American Robin"
-    scientific_name: "Turdus migratorius"
-
+  # ── Year-round residents ────────────────────────────────────────────────
   - code: HOFI
     common_name: "House Finch"
     scientific_name: "Haemorhous mexicanus"
-
-  - code: MOCH
-    common_name: "Northern Mockingbird"
-    scientific_name: "Mimus polyglottos"
-
-  - code: ANHU
-    common_name: "Anna's Hummingbird"
-    scientific_name: "Calypte anna"
 
   - code: MODO
     common_name: "Mourning Dove"
     scientific_name: "Zenaida macroura"
 
+  - code: ANHU
+    common_name: "Anna's Hummingbird"
+    scientific_name: "Calypte anna"
+
   - code: CAVI
     common_name: "California Scrub-Jay"
     scientific_name: "Aphelocoma californica"
 
-  - code: BCCH
-    common_name: "Black-capped Chickadee"
-    scientific_name: "Poecile atricapillus"
+  - code: MOCH
+    common_name: "Northern Mockingbird"
+    scientific_name: "Mimus polyglottos"
 
-  - code: WREN
-    common_name: "House Wren"
-    scientific_name: "Troglodytes aedon"
-
-  - code: YWAR
-    common_name: "Yellow Warbler"
-    scientific_name: "Setophaga petechia"
+  - code: AMRO
+    common_name: "American Robin"
+    scientific_name: "Turdus migratorius"
 
   - code: SOSP
     common_name: "Song Sparrow"
@@ -58,21 +49,51 @@ species:
     common_name: "Lesser Goldfinch"
     scientific_name: "Spinus psaltria"
 
-  - code: CEDW
-    common_name: "Cedar Waxwing"
-    scientific_name: "Bombycilla cedrorum"
-
-  - code: NOCA
-    common_name: "Northern Cardinal"
-    scientific_name: "Cardinalis cardinalis"
-
   - code: DOWO
     common_name: "Downy Woodpecker"
     scientific_name: "Dryobates pubescens"
 
-  - code: WTSP
-    common_name: "White-throated Sparrow"
-    scientific_name: "Zonotrichia albicollis"
+  - code: WREN
+    common_name: "House Wren"
+    scientific_name: "Troglodytes aedon"
 
-# TODO (Phase 2): Expand this list based on iNaturalist SD data export.
-# Filter to species with >= 50 research-grade observations for training viability.
+  - code: AMCR
+    common_name: "American Crow"
+    scientific_name: "Corvus brachyrhynchos"
+
+  - code: SPTO
+    common_name: "Spotted Towhee"
+    scientific_name: "Pipilo maculatus"
+
+  - code: BLPH
+    common_name: "Black Phoebe"
+    scientific_name: "Sayornis nigricans"
+
+  - code: HOSP
+    common_name: "House Sparrow"
+    scientific_name: "Passer domesticus"
+
+  - code: EUST
+    common_name: "European Starling"
+    scientific_name: "Sturnus vulgaris"
+
+  # ── Seasonal / common visitors ──────────────────────────────────────────
+  - code: WCSP
+    common_name: "White-crowned Sparrow"
+    scientific_name: "Zonotrichia leucophrys"
+
+  - code: HOORI
+    common_name: "Hooded Oriole"
+    scientific_name: "Icterus cucullatus"
+
+  - code: WBNU
+    common_name: "White-breasted Nuthatch"
+    scientific_name: "Sitta carolinensis"
+
+  - code: OCWA
+    common_name: "Orange-crowned Warbler"
+    scientific_name: "Leiothlypis celata"
+
+  - code: YRUM
+    common_name: "Yellow-rumped Warbler"
+    scientific_name: "Setophaga coronata"
