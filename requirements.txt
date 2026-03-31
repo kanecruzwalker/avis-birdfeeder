@@ -19,11 +19,15 @@ soundfile==0.12.1          # WAV file I/O (required by librosa on some platforms
 Pillow==10.3.0             # Image resizing and format conversion
 numpy==1.26.4              # Array operations across all pipelines
 
-# ── Machine learning (Phase 4) ───────────────────────────────────────────────
+# ── Machine learning (Phase 3 — baselines) ───────────────────────────────────
+scikit-learn==1.8.0        # KNN and SVM baselines, metrics, preprocessing
+matplotlib==3.10.8         # Confusion matrices, per-class F1 plots, k-selection curves
+pandas==3.0.2              # Split CSV loading and experiment log (notebooks/results/)
+
+# ── Machine learning (Phase 4 — pretrained models) ───────────────────────────
 torch==2.3.0               # PyTorch — model training and CPU inference
 torchvision==0.18.0        # EfficientNet / MobileNet pretrained weights + transforms
 timm==1.0.3                # Additional pretrained vision models (EfficientNet variants)
-
 # ── BirdNET integration (Phase 4) ────────────────────────────────────────────
 # BirdNET-Analyzer is installed from GitHub source in Phase 4.
 # Uncomment when ready:
