@@ -21,6 +21,7 @@ ENV/
 # Keep .env.example committed — it documents required variables.
 
 # ── Datasets (large — download separately via scripts/download_datasets.py) ───
+data/
 data/raw/
 data/processed/
 data/splits/
