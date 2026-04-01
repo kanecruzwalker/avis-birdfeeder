@@ -1,2 +1,3 @@
 phase,notebook,modality,model,features,best_params,test_accuracy,macro_f1,weighted_f1,n_train,n_test,species_count,timestamp,notes
 3,audio_baseline.ipynb,audio,KNN,"MFCC mean+std (n_mfcc=40, sr=48000)","k=3, metric=euclidean",0.3023,0.1913,0.2925,334,86,18,2026-03-31 05:19,"Thin-data species: ['ANHU', 'BLPH', 'DOWO', 'MODO', 'YRUM']. Baseline floor for Phase 4 BirdNET comparison."
+3,visual_baseline.ipynb,visual,SVM,"HOG (orient=9, ppc=(8, 8), cpb=(2, 2)) + color hist (32 bins x3 channels)","C=10.0, kernel=rbf, gamma=scale",0.2128,0.1208,0.1427,2670,672,19,2026-03-31 17:05,"Smaller training set species: ['OCWA', 'SOSP', 'WREN']. Baseline floor for Phase 4 EfficientNet comparison."
