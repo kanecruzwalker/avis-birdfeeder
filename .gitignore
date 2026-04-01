@@ -37,6 +37,8 @@ models/*.onnx
 # Keep model cards and label_map.json committed:
 !models/label_map.json
 !models/**/*.md
+# Keep label map JSONs committed — small files needed for inference
+!models/*.json
 
 # ── Logs ──────────────────────────────────────────────────────────────────────
 logs/

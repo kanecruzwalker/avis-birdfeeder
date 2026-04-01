@@ -10,6 +10,74 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.4.3] — Phase 4 Frozen EfficientNet + Linear Classifier
+
+### Added
+- `notebooks/visual_efficientnet.ipynb` Section 11 — frozen EfficientNet-B0
+  feature extractor + LogisticRegression; test accuracy=0.930, macro F1=0.931,
+  weighted F1=0.930 (19 species, n=672); 8x improvement over SVM baseline (PR #X)
+- `notebooks/results/visual_linear_confusion_matrix.png`,
+  `visual_linear_per_class_f1.png` — evaluation plots for frozen+linear approach
+
+### Known results
+- Best C=0.1 on val set; all 19 species beat SVM baseline individually
+- DOWO and SOSP: F1=1.00; HOSP lowest at F1=0.85
+
+---
+
+## [0.4.2] — Phase 4 BirdNET Pretrained Audio
+
+### Added
+- `notebooks/audio_birdnet.ipynb` Section 10-13 — BirdNET pretrained inference
+  via birdnetlib 0.9.0; test accuracy=0.744, macro F1=0.776, weighted F1=0.823
+  (18 species, n=86); 4x improvement over KNN baseline (PR #X)
+- `notebooks/results/audio_birdnet_confusion_matrix.png`,
+  `audio_birdnet_per_class_f1.png` — BirdNET evaluation plots
+- `resampy==0.4.3` — required for birdnetlib MP3 decoding via librosa
+
+### Known results
+- 66/86 test files got a known-species detection (coverage 77%)
+- BLPH, DOWO, HOSP, MODO: F1=1.00; ANHU lowest at F1=0.67
+
+---
+
+## [0.4.1] — Phase 4 Classifier Modules + Agent Wiring
+
+### Added
+- `src/audio/classify.py` — AudioClassifier wrapping `_build_audio_cnn`;
+  lazy loading, from_config() reads paths.yaml, predict() on mel spectrograms
+- `src/vision/classify.py` — VisualClassifier wrapping EfficientNet-B0 via
+  timm; lazy loading, HWC->CHW transpose at inference
+- `src/agent/bird_agent.py` — from_config() and _cycle() implemented;
+  graceful degradation per modality, threshold gate before dispatch
+- `scripts/generate_label_map.py` — derives label maps from split CSVs;
+  writes models/label_map.json, audio_label_map.json, visual_label_map.json
+- `tests/audio/test_classify.py` — 18 tests
+- `tests/vision/test_classify.py` — 19 tests
+- `tests/agent/test_bird_agent.py` — 20 tests
+- `tests/scripts/test_generate_label_map.py` — 10 tests
+
+---
+
+## [0.4.0] — Phase 4 Baseline CNN Models
+
+### Added
+- `notebooks/audio_birdnet.ipynb` — CNN from scratch on mel spectrograms;
+  test accuracy=0.116, macro F1=0.089 (18 species, n=86); underperforms
+  KNN baseline — insufficient data for CNN from scratch
+- `notebooks/visual_efficientnet.ipynb` — EfficientNet-B0 fine-tuned;
+  test accuracy=0.103, macro F1=0.097 (19 species, n=672); overfits on
+  limited data
+- `notebooks/results/experiments.csv` — cleaned 6-row canonical log with
+  deduplication guard in all Phase 4 notebooks
+- `notebooks/results/phase3/`, `phase4/` — result PNGs organized by phase
+
+### Changed
+- `requirements.txt` — added birdnetlib==0.9.0, tensorflow-cpu==2.21.0,
+  resampy==0.4.3 under Phase 4 BirdNET inference section
+
+---
+
 ## [0.3.2] — Phase 3 Fusion + Notify
 
 ### Added

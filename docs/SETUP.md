@@ -119,3 +119,20 @@ python scripts/generate_splits.py
 This writes CSV files to `data/splits/`. Re-run if the species list changes.
 Do not change `random_seed` in `configs/thresholds.yaml` after splits are
 first generated — it would invalidate all trained models.
+
+
+## Generate Label Maps
+
+After generating splits, generate the label map JSON files used by the classifiers:
+```bash
+python scripts/generate_label_map.py
+```
+
+This writes `models/label_map.json`, `models/audio_label_map.json`, and
+`models/visual_label_map.json`. These files are committed to the repo —
+you only need to run this if you change the species list or retrain splits.
+```
+
+**requirements.txt** — small typo, missing space before `#HOG`:
+```
+scikit-image==0.24.0       # HOG (Histogram of Oriented Gradients)...
