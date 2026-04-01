@@ -43,7 +43,7 @@ pip install -r requirements-dev.txt
 ## 3. Verify everything works
 
 ```bash
-# Run all tests — should show 28 passed, 0 warnings
+# Run all tests — should show 225 passed, 0 warnings
 python -m pytest tests/ -v
 
 # Check lint is clean — should show "All checks passed!"
@@ -171,6 +171,9 @@ docs/           # Architecture, setup, and contributing guides
 | Format code | `ruff format src/ tests/` |
 | Run the agent | `python -m src.agent.bird_agent` |
 | Run hardware tests (Pi only) | `python -m pytest tests/ -m hardware -v` |
+| Download audio datasets    | `python scripts/download_datasets.py` |
+| Generate train/val/test splits | `python scripts/generate_splits.py` |
+| Launch Jupyter             | `jupyter notebook` |
 
 ---
 

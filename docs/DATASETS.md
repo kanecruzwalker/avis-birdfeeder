@@ -108,7 +108,7 @@ print(verify_nabirds(Path("data/raw/nabirds")))  # True = good
 ### SD species subset
 
 NABirds covers 555 North American species. For training, we filter to the
-15 species in `configs/species.yaml`. This filtering happens at train time
+20 species in `configs/species.yaml`. This filtering happens at train time
 in Phase 3 (`notebooks/visual_baseline.ipynb`) — the full NABirds dataset
 is kept on disk so no re-download is needed if the species list expands.
 
