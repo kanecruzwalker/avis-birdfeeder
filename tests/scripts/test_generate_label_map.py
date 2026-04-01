@@ -19,14 +19,27 @@ from scripts.generate_label_map import _load_species_from_split, generate_label_
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
+
 @pytest.fixture()
 def species_yaml(tmp_path: Path) -> Path:
     data = {
         "species": [
-            {"code": "HOFI", "common_name": "House Finch", "scientific_name": "Haemorhous mexicanus"},
+            {
+                "code": "HOFI",
+                "common_name": "House Finch",
+                "scientific_name": "Haemorhous mexicanus",
+            },
             {"code": "MODO", "common_name": "Mourning Dove", "scientific_name": "Zenaida macroura"},
-            {"code": "DOWO", "common_name": "Downy Woodpecker", "scientific_name": "Dryobates pubescens"},
-            {"code": "ANHU", "common_name": "Anna's Hummingbird", "scientific_name": "Calypte anna"},
+            {
+                "code": "DOWO",
+                "common_name": "Downy Woodpecker",
+                "scientific_name": "Dryobates pubescens",
+            },
+            {
+                "code": "ANHU",
+                "common_name": "Anna's Hummingbird",
+                "scientific_name": "Calypte anna",
+            },
         ]
     }
     p = tmp_path / "species.yaml"
@@ -40,20 +53,25 @@ def splits_dir(tmp_path: Path) -> Path:
     splits = tmp_path / "splits"
     splits.mkdir(parents=True)
 
-    pd.DataFrame({
-        "file_path": ["a.wav", "b.wav", "c.wav"],
-        "species_code": ["HOFI", "MODO", "ANHU"],
-    }).to_csv(splits / "audio_train.csv", index=False)
+    pd.DataFrame(
+        {
+            "file_path": ["a.wav", "b.wav", "c.wav"],
+            "species_code": ["HOFI", "MODO", "ANHU"],
+        }
+    ).to_csv(splits / "audio_train.csv", index=False)
 
-    pd.DataFrame({
-        "file_path": ["a.jpg", "b.jpg", "c.jpg", "d.jpg"],
-        "species_code": ["HOFI", "MODO", "DOWO", "ANHU"],
-    }).to_csv(splits / "visual_train.csv", index=False)
+    pd.DataFrame(
+        {
+            "file_path": ["a.jpg", "b.jpg", "c.jpg", "d.jpg"],
+            "species_code": ["HOFI", "MODO", "DOWO", "ANHU"],
+        }
+    ).to_csv(splits / "visual_train.csv", index=False)
 
     return splits
 
 
 # ── _load_species_from_split ──────────────────────────────────────────────────
+
 
 class TestLoadSpeciesFromSplit:
     def test_returns_sorted_unique_codes(self, tmp_path: Path) -> None:
@@ -71,8 +89,11 @@ class TestLoadSpeciesFromSplit:
 
 # ── generate_label_maps ───────────────────────────────────────────────────────
 
+
 class TestGenerateLabelMaps:
-    def test_shared_map_is_union(self, splits_dir: Path, tmp_path: Path, species_yaml: Path) -> None:
+    def test_shared_map_is_union(
+        self, splits_dir: Path, tmp_path: Path, species_yaml: Path
+    ) -> None:
         maps = generate_label_maps(splits_dir, tmp_path / "models", species_yaml)
         shared_codes = set(maps["shared"].values())
         assert shared_codes == {"HOFI", "MODO", "ANHU", "DOWO"}
