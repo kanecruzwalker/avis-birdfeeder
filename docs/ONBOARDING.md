@@ -43,7 +43,7 @@ pip install -r requirements-dev.txt
 ## 3. Verify everything works
 
 ```bash
-# Run all tests — should show 225 passed, 0 warnings
+# Run all tests — should show 287 passed, 0 warnings
 python -m pytest tests/ -v
 
 # Check lint is clean — should show "All checks passed!"
