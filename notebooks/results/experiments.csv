@@ -1,3 +1,7 @@
-phase,notebook,modality,model,features,best_params,test_accuracy,macro_f1,weighted_f1,n_train,n_test,species_count,timestamp,notes
-3,audio_baseline.ipynb,audio,KNN,"MFCC mean+std (n_mfcc=40, sr=48000)","k=3, metric=euclidean",0.3023,0.1913,0.2925,334,86,18,2026-03-31 05:19,"Thin-data species: ['ANHU', 'BLPH', 'DOWO', 'MODO', 'YRUM']. Baseline floor for Phase 4 BirdNET comparison."
-3,visual_baseline.ipynb,visual,SVM,"HOG (orient=9, ppc=(8, 8), cpb=(2, 2)) + color hist (32 bins x3 channels)","C=10.0, kernel=rbf, gamma=scale",0.2128,0.1208,0.1427,2670,672,19,2026-03-31 17:05,"Smaller training set species: ['OCWA', 'SOSP', 'WREN']. Baseline floor for Phase 4 EfficientNet comparison."
+phase,notebook,modality,model,n_species,n_test,accuracy,macro_f1,weighted_f1,notes
+3,audio_baseline.ipynb,audio,KNN,18,86,0.302,0.191,0.293,"MFCC mean+std (n_mfcc=40, sr=48000), k=3. Baseline floor for Phase 4 comparison."
+3,visual_baseline.ipynb,visual,SVM,19,672,0.213,0.121,0.143,"HOG + color hist features, C=10.0 rbf. Baseline floor for Phase 4 comparison."
+4,audio_birdnet.ipynb,audio,CNN (mel spectrogram),18,86,0.116,0.089,0.093,"_build_audio_cnn, 30 epochs, weighted CE loss, Adam lr=1e-3. Underperforms KNN — insufficient data for CNN from scratch."
+4,audio_birdnet.ipynb,audio,BirdNET pretrained (birdnetlib 0.9.0),18,86,0.744,0.776,0.823,"BirdNET global model, no fine-tuning, min_conf=0.1, matched on scientific_name. resampy installed, 66/86 files detected."
+4,visual_efficientnet.ipynb,visual,EfficientNet-B0 (fine-tuned),19,672,0.103,0.097,0.093,"EfficientNet-B0 timm, phase A 10ep head-only lr=1e-3, phase B 15ep full lr=1e-4. Overfits — insufficient data for full fine-tuning."
+4,visual_efficientnet.ipynb,visual,Frozen EfficientNet-B0 + LogisticRegression,19,672,0.93,0.931,0.93,"timm efficientnet_b0 pretrained=True frozen, LogReg C=0.1, StandardScaler. ImageNet features transfer well to bird species."
