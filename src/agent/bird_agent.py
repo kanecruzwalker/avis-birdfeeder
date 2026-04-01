@@ -21,9 +21,8 @@ Design principles:
     - Graceful degradation: if one modality fails (e.g. mic unplugged), the
       agent continues with the other.
 
-Phase 3 will implement the detection logic (motion + audio energy thresholds).
-Phase 4 will wire in the real classifiers.
-Phase 5 will add parallel execution for audio + visual pipelines.
+Phase 4 wires in AudioClassifier and VisualClassifier. Capture hardware
+(mic + camera) and parallel execution are Phase 5.
 
 Run directly:
     python -m src.agent.bird_agent
@@ -35,12 +34,25 @@ import logging
 import time
 from pathlib import Path
 
+import numpy as np
+import yaml
+
+from src.audio.classify import AudioClassifier
+from src.data.schema import BirdObservation
+from src.fusion.combiner import ScoreFuser
+from src.notify.notifier import Notifier
+from src.vision.classify import VisualClassifier
+
 logger = logging.getLogger(__name__)
 
 
 class BirdAgent:
     """
     Main agentic loop for the Avis birdfeeder system.
+
+    In Phase 4 the agent accepts pre-captured numpy arrays (spectrogram +
+    frame) passed directly to _cycle(). Phase 5 will add live capture via
+    src.audio.capture and src.vision.capture, replacing the stub inputs.
 
     Usage:
         agent = BirdAgent.from_config("configs/")
@@ -49,31 +61,44 @@ class BirdAgent:
 
     def __init__(
         self,
+        audio_classifier: AudioClassifier | None,
+        visual_classifier: VisualClassifier | None,
+        fuser: ScoreFuser,
+        notifier: Notifier,
         loop_interval_seconds: float = 1.0,
-        audio_enabled: bool = True,
-        visual_enabled: bool = True,
         confidence_threshold: float = 0.7,
     ) -> None:
         """
         Args:
-            loop_interval_seconds: Seconds to wait between perception cycles
-                when no bird is detected. Reduces CPU load during idle periods.
-            audio_enabled: Whether the audio pipeline is active. Set False if
-                mic is unavailable or being debugged independently.
-            visual_enabled: Whether the visual pipeline is active.
-            confidence_threshold: Minimum fused confidence to trigger a
-                notification. Predictions below this are discarded.
+            audio_classifier: Loaded AudioClassifier, or None if audio disabled.
+            visual_classifier: Loaded VisualClassifier, or None if visual disabled.
+            fuser: ScoreFuser instance for combining classifier outputs.
+            notifier: Notifier instance for dispatching observations.
+            loop_interval_seconds: Seconds to wait between cycles during idle.
+            confidence_threshold: Minimum fused confidence to trigger notification.
         """
+        if audio_classifier is None and visual_classifier is None:
+            raise ValueError("At least one of audio_classifier or visual_classifier must be set.")
+
+        self.audio_classifier = audio_classifier
+        self.visual_classifier = visual_classifier
+        self.fuser = fuser
+        self.notifier = notifier
         self.loop_interval_seconds = loop_interval_seconds
-        self.audio_enabled = audio_enabled
-        self.visual_enabled = visual_enabled
         self.confidence_threshold = confidence_threshold
         self._running = False
 
+        active = []
+        if audio_classifier:
+            active.append("audio")
+        if visual_classifier:
+            active.append("visual")
+
         logger.info(
-            "BirdAgent initialized | "
-            f"audio={audio_enabled} visual={visual_enabled} "
-            f"threshold={confidence_threshold} interval={loop_interval_seconds}s"
+            "BirdAgent initialized | modalities=%s threshold=%.2f interval=%.1fs",
+            "+".join(active),
+            confidence_threshold,
+            loop_interval_seconds,
         )
 
     @classmethod
@@ -82,8 +107,12 @@ class BirdAgent:
         Construct a BirdAgent from the configs/ directory.
 
         Reads:
-            configs/thresholds.yaml  → confidence_threshold, loop_interval
-            configs/paths.yaml       → model paths, log path
+            configs/thresholds.yaml  → confidence_threshold, loop_interval_seconds
+            configs/paths.yaml       → model paths, log paths (via sub-components)
+
+        Both classifiers are constructed but weights are loaded lazily on first
+        predict() call — from_config() itself is fast and does not touch disk
+        beyond reading YAML.
 
         Args:
             config_dir: Path to the configs/ directory.
@@ -91,13 +120,46 @@ class BirdAgent:
         Returns:
             Fully configured BirdAgent instance.
         """
-        raise NotImplementedError("Implement in Phase 3.")
+        config_dir = Path(config_dir)
+        thresholds_path = config_dir / "thresholds.yaml"
+        paths_path = config_dir / "paths.yaml"
+
+        with thresholds_path.open() as f:
+            thresholds = yaml.safe_load(f)
+
+        confidence_threshold = thresholds["agent"]["confidence_threshold"]
+        loop_interval_seconds = thresholds["agent"]["loop_interval_seconds"]
+
+        audio_classifier = AudioClassifier.from_config(str(paths_path))
+        visual_classifier = VisualClassifier.from_config(str(paths_path))
+        fuser = ScoreFuser.from_config(str(thresholds_path))
+        notifier = Notifier.from_config(
+            notify_config_path=str(config_dir / "notify.yaml"),
+            paths_config_path=str(paths_path),
+        )
+
+        logger.info(
+            "BirdAgent.from_config | config_dir=%s threshold=%.2f",
+            config_dir,
+            confidence_threshold,
+        )
+
+        return cls(
+            audio_classifier=audio_classifier,
+            visual_classifier=visual_classifier,
+            fuser=fuser,
+            notifier=notifier,
+            loop_interval_seconds=loop_interval_seconds,
+            confidence_threshold=confidence_threshold,
+        )
 
     def run(self) -> None:
         """
         Start the main perception-decision-action loop.
 
         Runs until interrupted (KeyboardInterrupt) or stop() is called.
+        In Phase 4 each cycle receives stub inputs (zeros) since live capture
+        is not yet wired. Phase 5 replaces stubs with real capture calls.
         """
         self._running = True
         logger.info("BirdAgent starting main loop.")
@@ -118,32 +180,82 @@ class BirdAgent:
         """
         self._running = False
 
-    def _cycle(self) -> None:
+    def _cycle(
+        self,
+        spectrogram: np.ndarray | None = None,
+        frame: np.ndarray | None = None,
+    ) -> BirdObservation | None:
         """
         Execute one perception-decision-action cycle.
 
+        Phase 4: accepts pre-captured numpy arrays for offline / notebook use.
+        Phase 5: spectrogram and frame will be captured live from hardware;
+                 this signature will remain but defaults will come from capture.
+
         Steps:
-            1. Detect bird presence (motion / audio energy)
-            2. If detected: capture audio window + camera frame
-            3. Run classifiers (audio and/or visual)
-            4. Fuse results
-            5. If fused confidence >= threshold: dispatch via notifier
+            1. Run available classifiers on provided inputs.
+            2. Fuse results (handles single-modality gracefully via ScoreFuser).
+            3. If fused confidence >= threshold: dispatch via notifier.
+            4. Return the BirdObservation (or None if below threshold).
+
+        Args:
+            spectrogram: Float32 (n_mels, time_frames) mel spectrogram, or None
+                         to skip audio classification this cycle.
+            frame: Float32 (224, 224, 3) ImageNet-normalized frame, or None
+                   to skip visual classification this cycle.
+
+        Returns:
+            BirdObservation if confidence >= threshold, else None.
         """
-        # Phase 3: implement detection
-        # Phase 4: wire in classifiers
-        # Phase 5: parallelize audio + visual capture/classify
-        logger.debug("Agent cycle — classifiers not yet wired in.")
+        audio_result = None
+        visual_result = None
 
+        # Audio classification
+        if self.audio_classifier is not None and spectrogram is not None:
+            try:
+                audio_result = self.audio_classifier.predict(spectrogram)
+                logger.debug(
+                    "Audio: %s (%.3f)", audio_result.species_code, audio_result.confidence
+                )
+            except Exception:
+                logger.exception("Audio classifier failed — skipping audio this cycle.")
 
-def main() -> None:
-    """Entry point when running the agent directly: python -m src.agent.bird_agent"""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
-    agent = BirdAgent()
-    agent.run()
+        # Visual classification
+        if self.visual_classifier is not None and frame is not None:
+            try:
+                visual_result = self.visual_classifier.predict(frame)
+                logger.debug(
+                    "Visual: %s (%.3f)", visual_result.species_code, visual_result.confidence
+                )
+            except Exception:
+                logger.exception("Visual classifier failed — skipping visual this cycle.")
 
+        # Nothing to fuse
+        if audio_result is None and visual_result is None:
+            logger.debug("Agent cycle — no classifier inputs available.")
+            return None
 
-if __name__ == "__main__":
-    main()
+        # Fuse
+        observation = self.fuser.fuse(
+            audio_result=audio_result,
+            visual_result=visual_result,
+        )
+
+        # Threshold gate
+        if observation.fused_confidence < self.confidence_threshold:
+            logger.debug(
+                "Observation below threshold: %s %.3f < %.3f",
+                observation.species_code,
+                observation.fused_confidence,
+                self.confidence_threshold,
+            )
+            return None
+
+        # Dispatch
+        self.notifier.dispatch(observation)
+        logger.info(
+            "Observation dispatched: %s (fused=%.3f)",
+            observation.species_code,
+            observation.fused_confidence,
+        )
+        return observation
