@@ -59,19 +59,29 @@ on laptop with synthetic data — no hardware required.
 performance floor required by the course before introducing pretrained models.
 
 ### Audio baseline
-- [ ] KNN classifier on MFCC features (librosa)
-- [ ] Evaluate: accuracy, precision, recall, F1, confusion matrix
-- [ ] `notebooks/audio_baseline.ipynb`
+- [x] KNN classifier on MFCC features (librosa)
+- [X] Evaluate: accuracy, precision, recall, F1, confusion matrix
+- [X] `notebooks/audio_baseline.ipynb`
 
 ### Visual baseline
-- [ ] SVM classifier on flattened/HOG image features
-- [ ] Evaluate: same metrics as audio
-- [ ] `notebooks/visual_baseline.ipynb`
+- [X] SVM classifier on flattened/HOG image features
+- [X] Evaluate: same metrics as audio
+- [X] `notebooks/visual_baseline.ipynb`
 
 ### Fusion + Notify (implement stubs)
-- [ ] `src/fusion/combiner.py` — weighted confidence score fusion
-- [ ] `src/notify/notifier.py` — log and print channels
-- [ ] Tests for both modules (no hardware required)
+- [X] `src/fusion/combiner.py` — weighted confidence score fusion
+- [X] `src/notify/notifier.py` — log and print channels
+- [x] Tests for both modules (no hardware required)
+
+### Experiment tracking
+- [x] `notebooks/results/experiments.csv` — running log, 2 rows (KNN + SVM)
+- [x] `models/baselines/*.pkl` — frozen baseline artifacts for Phase 4 comparison
+
+### Known issues carried into Phase 4
+- CAVI missing from both audio and visual splits (pre-2016 AOU split)
+- AMCR too few audio files (2) — skipped from audio training
+- Thin-data audio species (BLPH, DOWO, MODO, YRUM) — F1=0.00, data limited
+- BirdNET and EfficientNet must beat: audio macro F1 > 0.191, visual macro F1 > 0.121
 
 ---
 
@@ -152,7 +162,7 @@ These are not course requirements but represent the long-term vision:
 |-------|-------------|-------------|--------|
 | 1 | Repository scaffold | Module structure, schemas, CI, configs | ✅ |
 | 2 | Preprocessing pipelines | WAV → spectrogram, image normalize, dataset download | ✅ |
-| 3 | Baseline models | KNN audio, SVM visual, fusion + notify implementation | ⏳ |
+| 3 | Baseline models | KNN audio, SVM visual, fusion + notify implementation | ✅ |
 | 4 | Pretrained model integration | BirdNET + EfficientNet fine-tuned on SD species | ⏳ |
 | 5 | Hardware deployment | Hailo inference, Pi cameras + mic, push notifications | ⏳ |
 | 6 | Evaluation and report | Metrics, confusion matrices, demo recording, submission | ⏳ |

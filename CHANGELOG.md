@@ -10,6 +10,74 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.3.2] — Phase 3 Fusion + Notify
+
+### Added
+- `src/fusion/combiner.py` — `ScoreFuser` fully implemented: equal, weighted,
+  and max confidence fusion strategies; winner-takes-all species disagreement
+  handling; graceful single-modality fallback; `from_config()` reads
+  `configs/thresholds.yaml` (PR #18)
+- `src/notify/notifier.py` — `Notifier` fully implemented: JSONL log channel
+  appends to `logs/observations.jsonl`; print channel formats via
+  `message_template`; `from_config()` reads `notify.yaml` + `paths.yaml`;
+  push/email deferred to Phase 5 (PR #18)
+- `tests/fusion/test_combiner.py` — expanded from 7 to 44 tests covering all
+  strategies, disagreement resolution, single-modality fallback, and
+  `from_config()` (PR #18)
+- `tests/notify/test_notifier.py` — 30 new tests: init, log, print, dispatch,
+  and `from_config()` (PR #18)
+
+---
+
+## [0.3.1] — Phase 3 Visual Baseline
+
+### Added
+- `notebooks/visual_baseline.ipynb` — SVM classifier on HOG + color histogram
+  features (26340-dim vector); C selection on val set (best C=10.0);
+  test accuracy=0.213, macro F1=0.121 (19 species, n=672) (PR #17)
+- `notebooks/results/visual_baseline_*.png` — frozen C-selection, confusion
+  matrix, and per-class F1 plots
+- `notebooks/results/experiments.csv` — second row appended (SVM visual)
+- `models/baselines/visual_svm_baseline.pkl` — trained SVM + scaler +
+  label encoder saved for Phase 4 comparison (gitignored)
+
+### Changed
+- `requirements.txt` — added scikit-image==0.24.0 for HOG feature extraction
+
+### Known results
+- Top performer: DOWO F1=0.81 (distinctive black/white pattern)
+- YRUM: high recall (0.78) but low precision — class imbalance artifact
+- 12 species scored F1=0.00 — expected with HOG+color on limited data
+
+---
+
+## [0.3.0] — Phase 3 Audio Baseline
+
+### Added
+- `notebooks/audio_baseline.ipynb` — KNN classifier on MFCC features
+  (80-dim mean+std vector, n_mfcc=40); k selection on val set (best k=3);
+  test accuracy=0.302, macro F1=0.191 (18 species, n=86) (PR #16)
+- `notebooks/results/audio_baseline_*.png` — frozen k-selection, confusion
+  matrix, and per-class F1 plots
+- `notebooks/results/experiments.csv` — running experiment log, first row
+  appended (KNN audio)
+- `models/baselines/audio_knn_baseline.pkl` — trained KNN + scaler +
+  label encoder saved for Phase 4 comparison (gitignored)
+- `notebooks/` directory — established with `results/` subdirectory for
+  all notebook output artifacts
+
+### Changed
+- `requirements.txt` — added scikit-learn==1.8.0, matplotlib==3.10.8,
+  pandas==3.0.2 under new Phase 3 section
+- `.gitignore` — added `models/**/*.pkl` to exclude trained baseline artifacts
+
+### Known results
+- Top performers: OCWA F1=0.80, WCSP F1=0.63, HOFI F1=0.55
+- Thin-data species (ANHU, BLPH, DOWO, MODO, YRUM): F1=0.00 — data
+  limitation, not model failure
+
+---
+
 ## [0.2.4] — Phase 2 Split Generation
 
 ### Added
