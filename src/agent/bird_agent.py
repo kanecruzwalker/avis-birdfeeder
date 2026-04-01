@@ -214,9 +214,7 @@ class BirdAgent:
         if self.audio_classifier is not None and spectrogram is not None:
             try:
                 audio_result = self.audio_classifier.predict(spectrogram)
-                logger.debug(
-                    "Audio: %s (%.3f)", audio_result.species_code, audio_result.confidence
-                )
+                logger.debug("Audio: %s (%.3f)", audio_result.species_code, audio_result.confidence)
             except Exception:
                 logger.exception("Audio classifier failed — skipping audio this cycle.")
 

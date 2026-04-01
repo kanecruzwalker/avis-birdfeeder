@@ -23,6 +23,7 @@ from src.data.schema import BirdObservation, ClassificationResult, Modality
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+
 def _make_result(
     species_code: str = "HOFI",
     confidence: float = 0.9,
@@ -84,6 +85,7 @@ DUMMY_FRAME = np.zeros((224, 224, 3), dtype=np.float32)
 
 # ── __init__ ──────────────────────────────────────────────────────────────────
 
+
 class TestBirdAgentInit:
     def test_stores_threshold(self) -> None:
         agent = _make_agent(confidence_threshold=0.8)
@@ -110,6 +112,7 @@ class TestBirdAgentInit:
 
 
 # ── _cycle — happy paths ──────────────────────────────────────────────────────
+
 
 class TestCycleHappyPath:
     def test_returns_observation_above_threshold(self) -> None:
@@ -148,6 +151,7 @@ class TestCycleHappyPath:
 
 # ── _cycle — single modality ──────────────────────────────────────────────────
 
+
 class TestCycleSingleModality:
     def test_audio_only_no_frame(self) -> None:
         agent = _make_agent()
@@ -179,6 +183,7 @@ class TestCycleSingleModality:
 
 # ── _cycle — exception handling ───────────────────────────────────────────────
 
+
 class TestCycleExceptionHandling:
     def test_audio_exception_continues_with_visual(self) -> None:
         """If audio classifier raises, visual result still fused."""
@@ -208,6 +213,7 @@ class TestCycleExceptionHandling:
 
 
 # ── from_config ───────────────────────────────────────────────────────────────
+
 
 class TestFromConfig:
     def test_constructs_without_error(self) -> None:
