@@ -74,8 +74,8 @@ def main() -> None:
         except ImportError:
             from tensorflow import lite as tflite  # noqa: F401
 
-        from birdnetlib.analyzer import Analyzer
         from birdnetlib import Recording
+        from birdnetlib.analyzer import Analyzer
 
         analyzer = Analyzer()
         recording = Recording(analyzer, str(wav_path), min_conf=min_conf)

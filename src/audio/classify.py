@@ -133,7 +133,6 @@ class AudioClassifier:
         logger.info("AudioClassifier.from_config | paths.yaml=%s", config_path)
         return cls(species_list_path=str(species_list_path))
 
-
     def _load(self) -> None:
         """
         Build species lookup tables from configs/species.yaml.
@@ -219,26 +218,19 @@ class AudioClassifier:
                     data = json.loads(line)
                     break
             else:
-                raise NoBirdDetectedError(
-                    f"audio_inference.py produced no JSON output: {output}"
-                )
+                raise NoBirdDetectedError(f"audio_inference.py produced no JSON output: {output}")
 
-        except subprocess.TimeoutExpired:
-            raise NoBirdDetectedError("BirdNET inference subprocess timed out")
+        except subprocess.TimeoutExpired as exc:
+            raise NoBirdDetectedError("BirdNET inference subprocess timed out") from exc
         except Exception as exc:
-            raise NoBirdDetectedError(
-                f"BirdNET subprocess failed: {exc}"
-            ) from exc
+            raise NoBirdDetectedError(f"BirdNET subprocess failed: {exc}") from exc
 
         if data.get("error"):
             if data["error"] == "NO_BIRD_DETECTED":
-                raise NoBirdDetectedError(
-                    f"No SD species detected above min_conf={self.min_conf}"
-                )
+                raise NoBirdDetectedError(f"No SD species detected above min_conf={self.min_conf}")
             raise NoBirdDetectedError(f"BirdNET error: {data['error']}")
 
         code = data["species_code"]
-        meta = self._species_meta.get(code, {})
 
         logger.debug(
             "Audio predict: %s (%.3f) from %s",
@@ -268,8 +260,6 @@ class AudioClassifier:
             self._analyzer = Analyzer()
             logger.info("BirdNET Analyzer loaded.")
 
-        from birdnetlib import Recording  # type: ignore[import]
-
         try:
             recording = Recording(
                 self._analyzer,
@@ -279,9 +269,7 @@ class AudioClassifier:
             recording.analyze()
             detections = recording.detections
         except Exception as exc:
-            raise NoBirdDetectedError(
-                f"BirdNET inference failed on {audio_path}: {exc}"
-            ) from exc
+            raise NoBirdDetectedError(f"BirdNET inference failed on {audio_path}: {exc}") from exc
 
         if not detections:
             raise NoBirdDetectedError(
