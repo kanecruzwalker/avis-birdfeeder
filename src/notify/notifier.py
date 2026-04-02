@@ -4,33 +4,62 @@ src/notify/notifier.py
 Dispatches BirdObservation events to configured notification channels.
 
 Supported channels (toggled via configs/notify.yaml):
-    - log:   Always active. Appends JSON lines to the log file defined in
-             configs/paths.yaml. Each line is a complete, parseable JSON object.
-    - print: Console output — useful for development and live demos.
-    - push:  Mobile push notification (Phase 5 — requires service credentials).
-    - email: Email notification (Phase 5 — requires SMTP credentials).
+    - log:     Always active. Appends JSON lines to the log file defined in
+               configs/paths.yaml. Each line is a complete, parseable JSON object.
+               This is the local equivalent of a database — every observation is
+               persisted here regardless of other channel status.
+    - print:   Console output — useful for development and live demos.
+    - push:    Mobile push notification via Pushover (Phase 5).
+               Requires PUSHOVER_USER_KEY and PUSHOVER_APP_TOKEN in .env.
+    - webhook: HTTP POST to a configurable backend URL (Phase 6+).
+               Designed for the future web app / mobile app backend.
+               When active, posts the full BirdObservation JSON to webhook_url
+               so a backend can persist observations, serve a UI, and trigger
+               richer notifications (in-app alerts, live feed, species history).
+    - email:   Email notification (future — not yet implemented).
 
-Design principle:
-    The notifier does not know or care about classification. It receives a
-    finished BirdObservation and delivers it. Adding a new channel means
-    adding a new _channel() method here — no other module needs to change.
+Design principles:
+    - The notifier is channel-agnostic. It receives a finished BirdObservation
+      and delivers it. Adding a new channel means adding one method here —
+      no other module changes.
+    - Channel credentials (API keys, tokens) come from environment variables
+      via python-dotenv. They are never stored in YAML configs or source code.
+    - Each channel fails independently. An error in push does not prevent
+      log or webhook from running.
+    - The webhook channel is the bridge to a future web app. When a backend
+      is built, webhook_url is configured and the channel is enabled. The
+      BirdObservation schema is already rich enough to drive a full UI:
+      species, confidence, timestamps, image/audio paths, dual-camera results,
+      and Phase 6 stereo depth estimates.
 
-Log format:
-    Each line in the log file is a JSON object with all BirdObservation fields
-    serialized. The log file grows indefinitely and is never truncated by this
-    module — rotation is handled externally if needed.
+Phase 5: log, print, push implemented. webhook stub defined.
+Phase 6+: webhook implemented pointing at web app backend.
 
-    Example line:
-        {"species_code": "HOFI", "common_name": "House Finch", ...}
+Notification channel config (configs/notify.yaml):
+    channels:
+        log: true
+        print: true
+        push: true        # Pushover — Phase 5 MVP
+        webhook: false    # Future web app backend
+        email: false
 
-Phase 3: log and print channels implemented.
-Phase 5: push and email channels will be added.
+Pushover credentials (.env):
+    PUSHOVER_USER_KEY=your_user_key_here
+    PUSHOVER_APP_TOKEN=your_app_token_here
+
+Webhook config (configs/notify.yaml, when enabled):
+    webhook:
+        url: "https://your-backend.com/api/observations"
+        timeout_seconds: 5
+        # Optional: include Authorization header for authenticated backends
+        auth_header: ""   # e.g. "Bearer your_token_here"
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 
 import yaml
@@ -39,10 +68,32 @@ from src.data.schema import BirdObservation
 
 logger = logging.getLogger(__name__)
 
+# Load .env if python-dotenv is available.
+# Credentials are read from environment variables, not from YAML.
+# If python-dotenv is not installed, credentials must be set in the
+# shell environment before running the agent.
+try:
+    from dotenv import load_dotenv  # type: ignore[import]
+
+    load_dotenv()
+except ImportError:
+    logger.debug("python-dotenv not installed — reading credentials from environment directly.")
+
 
 class Notifier:
     """
     Dispatches a BirdObservation to all active notification channels.
+
+    Channel architecture:
+        Each channel is an independent method. Enabling/disabling a channel
+        requires only a config change — no source code changes.
+
+        Current channels:
+            _log()      — JSONL append (always active, local persistence)
+            _print()    — Console output (development/demo)
+            _push()     — Pushover mobile push (Phase 5)
+            _webhook()  — HTTP POST to backend (Phase 6+ stub)
+            _email()    — Email (future stub)
 
     Usage:
         notifier = Notifier.from_config("configs/notify.yaml", "configs/paths.yaml")
@@ -54,38 +105,58 @@ class Notifier:
         log_path: str | Path,
         enable_print: bool = True,
         enable_push: bool = False,
+        enable_webhook: bool = False,
         enable_email: bool = False,
         message_template: str = (
             "🐦 {common_name} ({scientific_name}) detected! " "Confidence: {confidence:.0%}"
         ),
+        webhook_url: str = "",
+        webhook_timeout_seconds: float = 5.0,
+        webhook_auth_header: str = "",
     ) -> None:
         """
         Args:
-            log_path:         Path to the JSONL log file where observations are appended.
-                              Parent directory is created on first write if absent.
-            enable_print:     Whether to print observations to stdout.
-            enable_push:      Whether to send push notifications (Phase 5).
-            enable_email:     Whether to send email notifications (Phase 5).
-            message_template: Format string for console/push display.
-                              Supports: {common_name}, {scientific_name},
-                              {confidence}, {species_code}, {timestamp}.
+            log_path:                 Path to the JSONL observation log file.
+                                      Parent directory is created on first write.
+            enable_print:             Whether to print observations to stdout.
+            enable_push:              Whether to send Pushover push notifications.
+                                      Requires PUSHOVER_USER_KEY and
+                                      PUSHOVER_APP_TOKEN environment variables.
+            enable_webhook:           Whether to POST observations to webhook_url.
+                                      Phase 6+ — set False until backend exists.
+            enable_email:             Whether to send email notifications (future).
+            message_template:         Format string for console/push display.
+                                      Supports: {common_name}, {scientific_name},
+                                      {confidence}, {species_code}, {timestamp}.
+            webhook_url:              Full URL for the webhook POST endpoint.
+                                      e.g. "https://api.yourdomain.com/observations"
+            webhook_timeout_seconds:  HTTP request timeout for webhook POSTs.
+            webhook_auth_header:      Optional Authorization header value.
+                                      e.g. "Bearer your_token" — sent as
+                                      Authorization header if non-empty.
         """
         self.log_path = Path(log_path)
         self.enable_print = enable_print
         self.enable_push = enable_push
+        self.enable_webhook = enable_webhook
         self.enable_email = enable_email
         self.message_template = message_template
+        self.webhook_url = webhook_url
+        self.webhook_timeout_seconds = webhook_timeout_seconds
+        self.webhook_auth_header = webhook_auth_header
 
     @classmethod
     def from_config(cls, notify_config_path: str, paths_config_path: str) -> Notifier:
         """
         Construct a Notifier from config YAMLs.
 
-        Reads channel toggles from notify.yaml and log_path from paths.yaml.
+        Reads channel toggles and webhook config from notify.yaml.
+        Reads log_path from paths.yaml.
+        Credentials (Pushover keys) are read from environment variables.
 
         Args:
             notify_config_path: Path to configs/notify.yaml.
-            paths_config_path:  Path to configs/paths.yaml (for log_path).
+            paths_config_path:  Path to configs/paths.yaml.
 
         Returns:
             Configured Notifier instance.
@@ -109,6 +180,7 @@ class Notifier:
 
         channels = notify_cfg.get("channels", {})
         display = notify_cfg.get("display", {})
+        webhook_cfg = notify_cfg.get("webhook", {})
         log_path = paths_cfg.get("logs", {}).get("observations", "logs/observations.jsonl")
 
         template = display.get(
@@ -117,10 +189,11 @@ class Notifier:
         )
 
         logger.info(
-            "Notifier loaded: log=%s print=%s push=%s email=%s",
+            "Notifier loaded | log=%s print=%s push=%s webhook=%s email=%s",
             log_path,
             channels.get("print", True),
             channels.get("push", False),
+            channels.get("webhook", False),
             channels.get("email", False),
         )
 
@@ -128,50 +201,64 @@ class Notifier:
             log_path=log_path,
             enable_print=channels.get("print", True),
             enable_push=channels.get("push", False),
+            enable_webhook=channels.get("webhook", False),
             enable_email=channels.get("email", False),
             message_template=template,
+            webhook_url=webhook_cfg.get("url", ""),
+            webhook_timeout_seconds=float(webhook_cfg.get("timeout_seconds", 5.0)),
+            webhook_auth_header=webhook_cfg.get("auth_header", ""),
         )
 
     def dispatch(self, observation: BirdObservation) -> None:
         """
         Send the observation to all active channels.
 
-        The log channel is always called first. Print, push, and email
-        channels are called only if enabled. Errors in individual channels
-        are logged and do not prevent other channels from running.
+        Log channel always runs first — local persistence is guaranteed
+        regardless of other channel failures. Each subsequent channel runs
+        independently; an exception in one does not prevent others from running.
 
         Args:
             observation: A confirmed BirdObservation from the fusion module.
         """
+        # Log is always first — guaranteed local persistence
         self._log(observation)
 
         if self.enable_print:
             self._print(observation)
+
         if self.enable_push:
             self._push(observation)
+
+        if self.enable_webhook:
+            self._webhook(observation)
+
         if self.enable_email:
             self._email(observation)
 
+    # ── Channel implementations ───────────────────────────────────────────────
+
     def _log(self, observation: BirdObservation) -> None:
         """
-        Append the observation as a JSON line to the log file.
+        Append the observation as a JSON line to the JSONL log file.
 
         Creates the parent directory if it does not exist.
-        Each line is a complete JSON object — the file is newline-delimited JSON (JSONL).
+        Each line is a complete JSON object — the file is newline-delimited JSON.
         Timestamps are serialized as ISO 8601 strings.
+
+        This is the local persistence layer. It is the source of truth for
+        all observations and the data source for a future web app backend
+        until a database is introduced.
 
         Args:
             observation: BirdObservation to log.
         """
         try:
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
-            # model_dump() serializes the Pydantic model to a dict.
-            # mode="json" converts datetime objects to ISO strings automatically.
             record = observation.model_dump(mode="json")
             with open(self.log_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
             logger.debug(
-                "Logged observation: %s (%.3f)",
+                "Logged: %s (%.3f)",
                 observation.species_code,
                 observation.fused_confidence,
             )
@@ -182,12 +269,9 @@ class Notifier:
         """
         Print a human-readable observation summary to stdout.
 
-        Uses message_template with the following variables:
-            {common_name}     — e.g. "House Finch"
-            {scientific_name} — e.g. "Haemorhous mexicanus"
-            {confidence}      — float in [0, 1], use :.0% for percentage
-            {species_code}    — e.g. "HOFI"
-            {timestamp}       — ISO 8601 UTC timestamp string
+        Format controlled by message_template in notify.yaml.
+        Available variables: {common_name}, {scientific_name},
+        {confidence}, {species_code}, {timestamp}.
 
         Args:
             observation: BirdObservation to display.
@@ -201,24 +285,176 @@ class Notifier:
                 timestamp=observation.timestamp.isoformat(),
             )
             print(message)
-            logger.debug("Printed observation: %s", observation.species_code)
+            logger.debug("Printed: %s", observation.species_code)
         except (KeyError, ValueError) as exc:
             logger.error("Failed to format print message: %s", exc)
 
     def _push(self, observation: BirdObservation) -> None:
         """
-        Send a mobile push notification (Phase 5).
+        Send a mobile push notification via Pushover.
+
+        Pushover API: single HTTPS POST to api.pushover.net/1/messages.json
+        No SDK required — uses Python's built-in urllib.
+
+        Credentials are read from environment variables (set in .env):
+            PUSHOVER_USER_KEY   — your Pushover user key (from dashboard)
+            PUSHOVER_APP_TOKEN  — your application API token (from app settings)
+
+        Message format:
+            Title:   "🐦 {common_name}"
+            Message: "{scientific_name} | Confidence: {confidence:.0%}"
+                     + modality summary (audio ✓/– visual ✓/–)
+                     + stereo depth if available (Phase 6)
+
+        Priority: normal (0). Does not interrupt do-not-disturb.
+        Sound:    default Pushover sound.
+
+        If credentials are missing or the API call fails, the error is logged
+        and other channels continue unaffected.
 
         Args:
             observation: BirdObservation to deliver.
         """
-        raise NotImplementedError("Push notifications will be implemented in Phase 5.")
+        import urllib.parse
+        import urllib.request
+
+        user_key = os.environ.get("PUSHOVER_USER_KEY", "")
+        app_token = os.environ.get("PUSHOVER_APP_TOKEN", "")
+
+        if not user_key or not app_token:
+            logger.warning(
+                "Pushover credentials missing — set PUSHOVER_USER_KEY and "
+                "PUSHOVER_APP_TOKEN in .env. Push notification skipped."
+            )
+            return
+
+        # ── Build message ─────────────────────────────────────────────────────
+        audio_marker = "✓" if observation.audio_result else "–"
+        visual_marker = "✓" if observation.visual_result else "–"
+        dual_cam_note = " (dual cam)" if observation.has_dual_camera else ""
+
+        message_lines = [
+            f"{observation.scientific_name}",
+            f"Confidence: {observation.fused_confidence:.0%}",
+            f"Audio {audio_marker}  Visual {visual_marker}{dual_cam_note}",
+        ]
+
+        # Stereo depth — populated in Phase 6 when StereoEstimator is active
+        if observation.has_stereo_estimate and observation.estimated_size_cm:
+            message_lines.append(
+                f"Est. size: {observation.estimated_size_cm:.1f} cm  "
+                f"Depth: {observation.estimated_depth_cm:.0f} cm"
+            )
+
+        # Timestamp in readable local format
+        message_lines.append(observation.timestamp.strftime("%H:%M:%S UTC"))
+
+        payload = {
+            "token": app_token,
+            "user": user_key,
+            "title": f"🐦 {observation.common_name}",
+            "message": "\n".join(message_lines),
+            "priority": "0",  # normal — respects quiet hours
+            "sound": "none",  # silent — feeder alerts should not be intrusive
+        }
+
+        # ── POST to Pushover API ──────────────────────────────────────────────
+        try:
+            data = urllib.parse.urlencode(payload).encode("utf-8")
+            req = urllib.request.Request(
+                "https://api.pushover.net/1/messages.json",
+                data=data,
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=5) as response:
+                body = response.read().decode("utf-8")
+                status = json.loads(body).get("status", 0)
+                if status == 1:
+                    logger.info(
+                        "Push sent: %s (%.0f%%)",
+                        observation.species_code,
+                        observation.fused_confidence * 100,
+                    )
+                else:
+                    logger.warning("Pushover API returned status=%s body=%s", status, body)
+
+        except Exception as exc:
+            logger.error("Pushover push failed: %s", exc)
+
+    def _webhook(self, observation: BirdObservation) -> None:
+        """
+        POST the observation as JSON to a configured backend URL.
+
+        Phase 6+ — stub. Raises NotImplementedError until a backend exists.
+
+        When implemented, this channel bridges the Pi to a web/mobile app
+        backend. The backend receives the full BirdObservation JSON and can:
+            - Persist observations to a database
+            - Store image/audio media (upload from paths in observation)
+            - Trigger richer notifications (in-app alerts, websocket push)
+            - Serve a species history UI
+            - Drive a live feed viewer
+            - Support multi-feeder aggregation
+
+        Implementation sketch for Phase 6:
+            import urllib.request, urllib.parse
+
+            headers = {"Content-Type": "application/json"}
+            if self.webhook_auth_header:
+                headers["Authorization"] = self.webhook_auth_header
+
+            payload = observation.model_dump(mode="json")
+            data    = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+            req = urllib.request.Request(
+                self.webhook_url,
+                data=data,
+                headers=headers,
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=self.webhook_timeout_seconds) as resp:
+                logger.info("Webhook posted: %s → %s", observation.species_code, self.webhook_url)
+
+        Config (notify.yaml) when active:
+            channels:
+                webhook: true
+            webhook:
+                url: "https://api.yourdomain.com/observations"
+                timeout_seconds: 5
+                auth_header: "Bearer your_token_here"
+
+        Args:
+            observation: BirdObservation to deliver.
+
+        Raises:
+            NotImplementedError: Always in Phase 5.
+        """
+        raise NotImplementedError(
+            "Webhook channel is not yet implemented. "
+            "Build a backend API endpoint that accepts BirdObservation JSON, "
+            "implement this method, and set webhook_url in notify.yaml. "
+            "This is a Phase 6+ task."
+        )
 
     def _email(self, observation: BirdObservation) -> None:
         """
-        Send an email notification (Phase 5).
+        Send an email notification (future).
+
+        Implementation options:
+            - SMTP via smtplib (no external dependency)
+            - SendGrid / Mailgun API (reliable delivery, easy attachments)
+
+        Useful for: daily digests, rare species alerts, extended absence alerts
+        (e.g. "no birds detected in 24 hours — feeder may need refilling").
 
         Args:
             observation: BirdObservation to deliver.
+
+        Raises:
+            NotImplementedError: Always until implemented.
         """
-        raise NotImplementedError("Email notifications will be implemented in Phase 5.")
+        raise NotImplementedError(
+            "Email notifications are not yet implemented. "
+            "Options: smtplib (built-in) or SendGrid/Mailgun API. "
+            "This is a future task."
+        )
