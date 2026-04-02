@@ -10,6 +10,78 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.5.0] — Phase 5 Hardware Deployment (Software Complete)
+
+### Added
+- `src/audio/capture.py` — `AudioCapture`: Fifine USB mic (device index 1,
+  48kHz native, no resampling), 3-second windows, RMS energy gate discards
+  silent frames before BirdNET inference (PR #26)
+- `src/vision/capture.py` — `VisionCapture`: dual Pi Camera Module 3 via
+  picamera2, simultaneous capture, rolling background motion gate, feeder
+  crop ROI applied before 224×224 downsampling, saves raw frames to
+  `data/captures/images/` (PR #26)
+- `src/vision/stereo.py` — `StereoEstimator` Phase 6 stub: full interface
+  defined (calibrate, estimate, _rectify, _compute_disparity,
+  _disparity_to_depth), all methods raise `NotImplementedError` until
+  Phase 6 stereo calibration (PR #26)
+- `configs/hardware.yaml` — Pi hardware constants: mic device index, sample
+  rate, camera indices, capture resolution, feeder crop zone (x, y, w, h),
+  stereo baseline, Hailo device address (PR #26)
+- `src/notify/notifier.py` — `_push()` implemented via Pushover API (urllib,
+  no SDK); credentials from `.env`; graceful degradation when credentials
+  missing; `_webhook()` Phase 6 stub for future web app backend (PR #26)
+- `src/notify/notifier.py` — `enable_webhook`, `webhook_url`,
+  `webhook_timeout_seconds`, `webhook_auth_header` parameters and
+  `notify.yaml` webhook config block (PR #26)
+- Push notification confirmed working on device — House Finch, 87%
+  confidence (PR #26)
+
+### Changed
+- `src/audio/classify.py` — `AudioClassifier` updated to BirdNET inference
+  via birdnetlib (F1=0.776 vs F1=0.089 CNN from scratch). `predict()` now
+  takes a WAV file path. Added `NoBirdDetectedError` for graceful degradation
+  when no SD species detected (PR #26)
+- `src/vision/classify.py` — `VisualClassifier` updated to frozen
+  EfficientNet-B0 backbone + sklearn StandardScaler + LogisticRegression
+  pipeline (F1=0.931 vs F1=0.097 fine-tuned). Added `camera_index` param
+  passed through to `ClassificationResult` (PR #26)
+- `src/agent/bird_agent.py` — `_cycle()` wired to live `AudioCapture` and
+  `VisionCapture`. Both cameras classify independently. Cooldown suppression
+  via `_is_on_cooldown()` prevents notification spam for repeat detections.
+  `NoBirdDetectedError` handled as soft audio failure (PR #26)
+- `src/data/schema.py` — `ClassificationResult` gains `camera_index` field.
+  `BirdObservation` gains `visual_result_2`, `image_path_2`, `detection_box`,
+  `estimated_depth_cm`, `estimated_size_cm`, `stereo_calibrated` — all
+  optional with `None` defaults, fully backward compatible (PR #26)
+- `src/fusion/combiner.py` — `fuse()` accepts optional `visual_result_2`.
+  `_select_best_visual()` picks higher confidence or averages when both
+  cameras agree on species (PR #26)
+- `configs/notify.yaml` — added push/webhook channel toggles and webhook
+  config block. `push: false` committed as safe default — set `true` on
+  Pi deployment (PR #26)
+- `configs/paths.yaml` — added Phase 5 model paths: `visual_frozen_extractor`,
+  `visual_sklearn`, `stereo_calibration`, Hailo `.hef` paths (PR #26)
+- `.gitignore` — expanded `models/**/*.pt` to cover subdirectory weights,
+  removed accidentally tracked binary files (PR #26)
+- `notebooks/visual_efficientnet.ipynb` — added cell 28: saves
+  `frozen_extractor.pt` + `sklearn_pipeline.pkl` with verification round-trip
+  (PR #26)
+- `.env.example` — added `PUSHOVER_USER_KEY`, `PUSHOVER_APP_TOKEN`,
+  `WEBHOOK_AUTH_TOKEN` with setup instructions (PR #27)
+- `docs/SETUP.md` — added Phase 5 model artifact generation section (PR #26)
+- `docs/DATASETS.md` — added model artifacts table (PR #26)
+
+### Test count
+- 331 passing, 0 failing, CI green
+
+### Pending (Phase 5 hardware)
+- Pi physical deployment — cameras mounted, agent running
+- `scripts/capture_test_frame.py` — utility to save test frame for feeder
+  crop tuning
+- Push notification end-to-end test with real bird at feeder
+
+---
+
 ## [0.4.3] — Phase 4 Frozen EfficientNet + Linear Classifier
 
 ### Added
