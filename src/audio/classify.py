@@ -135,23 +135,13 @@ class AudioClassifier:
 
     def _load(self) -> None:
         """
-        Lazily load BirdNET Analyzer and build species lookup tables.
+        Build species lookup tables from configs/species.yaml.
 
-        BirdNET model load takes approximately 2 seconds. Deferring to first
-        predict() call keeps from_config() and __init__ fast, which matters
-        for test startup time and agent initialization.
-
-        Called automatically on first predict().
+        On the Pi, BirdNET inference runs in a Python 3.11 subprocess
+        (scripts/audio_inference.py) because tflite_runtime has no Python
+        3.13 wheel. _load() no longer instantiates the Analyzer directly —
+        it only builds the lookup tables needed to validate subprocess output.
         """
-        # Import here so birdnetlib is only required when actually running
-        # audio classification — not during schema imports, test collection, etc.
-        from birdnetlib.analyzer import Analyzer  # type: ignore[import]
-
-        logger.info("Loading BirdNET Analyzer (first call — ~2s)...")
-        self._analyzer = Analyzer()
-        logger.info("BirdNET Analyzer loaded.")
-
-        # Build species lookup tables from configs/species.yaml
         with self.species_list_path.open() as f:
             species_cfg = yaml.safe_load(f)
 
@@ -171,31 +161,104 @@ class AudioClassifier:
 
     def predict(self, audio_path: str | Path) -> ClassificationResult:
         """
-        Run BirdNET inference on a WAV file and return the top SD species prediction.
+        Run BirdNET inference on a WAV file via Python 3.11 subprocess.
 
-        BirdNET analyzes the full file and returns detections sorted by time segment.
-        We take the highest-confidence detection that matches one of our 20 SD species.
-        If no SD species is detected above min_conf, NoBirdDetectedError is raised.
+        Spawns scripts/audio_inference.py under the pyenv 3.11 interpreter
+        which has tflite_runtime installed. Result is returned as JSON on
+        stdout and parsed back into a ClassificationResult.
 
         Args:
             audio_path: Path to a WAV file. Expected: 3 seconds, 48kHz, mono.
-                        As saved by src.audio.capture.AudioCapture.capture_window().
 
         Returns:
             ClassificationResult for the highest-confidence SD species detection.
 
         Raises:
-            FileNotFoundError:    If audio_path does not exist.
-            NoBirdDetectedError:  If BirdNET finds no SD species above min_conf.
+            FileNotFoundError:   If audio_path does not exist.
+            NoBirdDetectedError: If BirdNET finds no SD species above min_conf.
         """
+        import json
+        import subprocess
+
         audio_path = Path(audio_path)
         if not audio_path.exists():
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
-        if self._analyzer is None:
+        if not self._sci_to_code:
             self._load()
 
-        # Run BirdNET inference
+        # Resolve paths
+        project_root = Path(__file__).resolve().parent.parent.parent
+        inference_script = project_root / "scripts" / "audio_inference.py"
+        python_311 = Path("/home/birdfeeder01/.pyenv/versions/3.11.9/bin/python")
+
+        # Fall back to direct birdnetlib call if 3.11 not available (dev/CI)
+        if not python_311.exists():
+            return self._predict_direct(audio_path)
+
+        try:
+            result = subprocess.run(
+                [
+                    str(python_311),
+                    str(inference_script),
+                    str(audio_path),
+                    str(self.species_list_path),
+                    str(self.min_conf),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            # Parse JSON from stdout — ignore stderr (numpy warnings etc.)
+            output = result.stdout.strip()
+            # Find the last line that looks like JSON
+            for line in reversed(output.splitlines()):
+                line = line.strip()
+                if line.startswith("{"):
+                    data = json.loads(line)
+                    break
+            else:
+                raise NoBirdDetectedError(f"audio_inference.py produced no JSON output: {output}")
+
+        except subprocess.TimeoutExpired as exc:
+            raise NoBirdDetectedError("BirdNET inference subprocess timed out") from exc
+        except Exception as exc:
+            raise NoBirdDetectedError(f"BirdNET subprocess failed: {exc}") from exc
+
+        if data.get("error"):
+            if data["error"] == "NO_BIRD_DETECTED":
+                raise NoBirdDetectedError(f"No SD species detected above min_conf={self.min_conf}")
+            raise NoBirdDetectedError(f"BirdNET error: {data['error']}")
+
+        code = data["species_code"]
+
+        logger.debug(
+            "Audio predict: %s (%.3f) from %s",
+            code,
+            data["confidence"],
+            audio_path.name,
+        )
+
+        return ClassificationResult(
+            species_code=code,
+            common_name=data.get("common_name", code),
+            scientific_name=data.get("scientific_name", ""),
+            confidence=data["confidence"],
+            modality=Modality.AUDIO,
+            model_version=self.MODEL_VERSION,
+        )
+
+    def _predict_direct(self, audio_path: Path) -> ClassificationResult:
+        """
+        Direct birdnetlib call — used on dev machines (not Pi) where
+        tflite_runtime or tensorflow is available in the main venv.
+        """
+        from birdnetlib.analyzer import Analyzer  # type: ignore[import]
+
+        if self._analyzer is None:
+            logger.info("Loading BirdNET Analyzer (first call — ~2s)...")
+            self._analyzer = Analyzer()
+            logger.info("BirdNET Analyzer loaded.")
 
         try:
             recording = Recording(
@@ -206,19 +269,13 @@ class AudioClassifier:
             recording.analyze()
             detections = recording.detections
         except Exception as exc:
-            logger.exception("BirdNET inference failed on %s: %s", audio_path, exc)
             raise NoBirdDetectedError(f"BirdNET inference failed on {audio_path}: {exc}") from exc
 
         if not detections:
-            logger.debug(
-                "BirdNET: no detections above min_conf=%.2f in %s", self.min_conf, audio_path
-            )
             raise NoBirdDetectedError(
                 f"No detections above min_conf={self.min_conf} in {audio_path.name}"
             )
 
-        # Filter to SD species and pick highest confidence
-        # BirdNET returns scientific names — resolve to our AOU codes
         sd_detections = []
         for d in detections:
             sci = d.get("scientific_name", "")
@@ -227,28 +284,12 @@ class AudioClassifier:
                 sd_detections.append((code, float(d["confidence"]), sci))
 
         if not sd_detections:
-            # BirdNET found birds but none are in our SD species list
-            top = max(detections, key=lambda d: d["confidence"])
-            logger.debug(
-                "BirdNET: no SD species match — top detection was '%s' (%.3f)",
-                top.get("scientific_name", "unknown"),
-                top.get("confidence", 0.0),
-            )
             raise NoBirdDetectedError(
-                f"BirdNET detected species outside SD list in {audio_path.name}. "
-                f"Top: {top.get('scientific_name', 'unknown')} ({top.get('confidence', 0.0):.3f})"
+                f"BirdNET detected species outside SD list in {audio_path.name}"
             )
 
-        # Winner: highest confidence among SD species matches
         best_code, best_conf, best_sci = max(sd_detections, key=lambda x: x[1])
         meta = self._species_meta.get(best_code, {})
-
-        logger.debug(
-            "Audio predict: %s (%.3f) from %s",
-            best_code,
-            best_conf,
-            audio_path.name,
-        )
 
         return ClassificationResult(
             species_code=best_code,
@@ -259,8 +300,9 @@ class AudioClassifier:
             model_version=self.MODEL_VERSION,
         )
 
+    # ── CNN from scratch — Phase 4 training artifact ──────────────────────────────
 
-# ── CNN from scratch — Phase 4 training artifact ──────────────────────────────
+
 # Retained for reproducibility. notebooks/audio_birdnet.ipynb imports
 # _build_audio_cnn() to train and evaluate the CNN baseline.
 # NOT used for inference in Phase 5 — BirdNET is the production audio model.
