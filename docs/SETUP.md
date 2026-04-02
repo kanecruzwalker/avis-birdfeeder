@@ -189,3 +189,6 @@ cp .env.example .env  # fill in PUSHOVER_USER_KEY and PUSHOVER_APP_TOKEN
 # Set push: true in configs/notify.yaml (do not commit)
 python -m src.agent.bird_agent
 ```
+# After mounting cameras, run this to verify field of view and tune feeder crop:
+python scripts/capture_test_frame.py
+# Images saved to data/captures/test/ — scp to laptop to view
