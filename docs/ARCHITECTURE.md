@@ -25,7 +25,9 @@ The orchestration layer. `bird_agent.py` owns the main loop. It calls into the a
 Three-stage pipeline:
 1. `capture.py` — Records audio from the USB mic in configurable window sizes
 2. `preprocess.py` — Converts raw WAV to mel spectrograms (the input format for BirdNET and our fine-tuned model)
-3. `classify.py` — Wraps BirdNET inference, returns a `ClassificationResult`
+3. `classify.py` — Wraps BirdNET inference via Python 3.11 subprocess bridge
+   (scripts/audio_inference.py) on Pi. Falls back to direct birdnetlib call
+   on dev machines. Returns a `ClassificationResult`
 
 ### `src/vision/`
 Three-stage pipeline:

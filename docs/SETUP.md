@@ -4,7 +4,7 @@
 
 - Python 3.11 or higher
 - Git
-- (On Pi) Raspberry Pi OS Bookworm 64-bit, Hailo drivers installed
+- (On Pi) Raspberry Pi OS OS Debian Trixie 64-bit (Python 3.13), Hailo drivers installed
 
 ## Clone and Install
 
@@ -153,3 +153,39 @@ This generates:
 - `models/visual/sklearn_pipeline.pkl` — StandardScaler + LogisticRegression pipeline
 
 These files are gitignored — run the notebook after cloning on any new machine.
+
+
+
+## Pi Deployment
+
+The Pi runs Debian Trixie with Python 3.13 as system Python. A two-venv
+architecture is required due to a dependency conflict:
+- `picamera2` C extension is compiled for Python 3.13 only
+- `tflite_runtime` (required by BirdNET) has no Python 3.13 aarch64 wheel
+
+**Setup:**
+```bash
+# 1. Create main venv (Python 3.13)
+python3 -m venv /mnt/data/avis-venv
+source /mnt/data/avis-venv/bin/activate
+pip install -r requirements-pi.txt
+
+# 2. Expose system picamera2 to venv
+echo "/usr/lib/python3/dist-packages" > \
+  /mnt/data/avis-venv/lib/python3.13/site-packages/system-dist-packages.pth
+
+# 3. Install pyenv and Python 3.11 for BirdNET subprocess
+curl https://pyenv.run | bash
+pyenv install 3.11.9
+/home/birdfeeder01/.pyenv/versions/3.11.9/bin/pip install \
+  pyyaml birdnetlib==0.9.0 tflite-runtime resampy librosa "numpy<2"
+
+# 4. Copy model artifacts
+mkdir -p models/visual
+# scp frozen_extractor.pt and sklearn_pipeline.pkl from laptop
+
+# 5. Configure and run
+cp .env.example .env  # fill in PUSHOVER_USER_KEY and PUSHOVER_APP_TOKEN
+# Set push: true in configs/notify.yaml (do not commit)
+python -m src.agent.bird_agent
+```
