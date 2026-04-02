@@ -66,3 +66,7 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+
+# pyenv local Python version pin — Pi-specific, not for dev machines
+.python-version
