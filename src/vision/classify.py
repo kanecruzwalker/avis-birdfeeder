@@ -1,35 +1,51 @@
 """
 src/vision/classify.py
 
-Wraps a fine-tuned EfficientNet-B0 model to produce a ClassificationResult.
+Wraps the frozen EfficientNet-B0 feature extractor + sklearn LogisticRegression
+pipeline to produce a ClassificationResult.
 
-Architecture:
-    - Backbone: EfficientNet-B0 pretrained on ImageNet (via timm).
-    - Head: replaced linear layer fine-tuned on our 19 SD species subset
-      of NABirds. Fine-tuning done in notebooks/visual_efficientnet.ipynb.
-    - Saved checkpoint: models/visual/finetuned_sdbirds.pt
+Architecture (Phase 5):
+    - Feature extractor: EfficientNet-B0 pretrained on ImageNet (via timm),
+      num_classes=0, global_pool="avg" — outputs 1280-dim feature vectors.
+      Backbone weights are frozen — no gradient computation at inference.
+    - Classifier head: StandardScaler + LogisticRegression trained on
+      extracted features from our 19 SD species NABirds subset.
+      Trained in notebooks/visual_efficientnet.ipynb (Section 10-11).
+
+Why this architecture instead of end-to-end fine-tuning?
+    Phase 4 evaluation showed frozen EfficientNet + LogReg achieves
+    macro F1=0.931 vs fine-tuned EfficientNet macro F1=0.097 on our
+    19-species SD dataset. The pretrained ImageNet features transfer
+    directly to bird species — fine-tuning on our limited data overfits.
+
+Artifacts loaded by _load() (saved by notebooks/visual_efficientnet.ipynb cell 28):
+    models/visual/frozen_extractor.pt   — EfficientNet backbone state dict
+    models/visual/sklearn_pipeline.pkl  — {"scaler", "clf", "label_map", "n_classes"}
 
 Input:  preprocessed frame — float32 array of shape (224, 224, 3), HWC,
-        ImageNet-normalized, as returned by src.vision.preprocess.
+        ImageNet-normalized, as returned by src.vision.preprocess.preprocess_frame().
 Output: ClassificationResult (src.data.schema)
 
 Design notes:
-    - HWC → CHW transpose applied here (not in preprocess). Preprocess outputs
-      (224, 224, 3); model expects (1, 3, 224, 224) after batch dim is added.
-    - Model loaded lazily on first predict() call — __init__ stays fast.
-    - label_map.json is shared with AudioClassifier: same file, same index
-      convention. Visual classes may differ (19 vs 18 species) so the map
-      contains the union; each classifier uses only its trained indices.
-    - species_list_path always resolves to configs/species.yaml — single
-      source of truth for common_name and scientific_name lookups.
+    - Both artifacts loaded lazily on first predict() call — __init__ stays fast.
+    - HWC → CHW transpose applied here (not in preprocess).
+    - camera_index is passed through to ClassificationResult so the agent and
+      fuser know which camera produced this result.
+    - _build_efficientnet() kept as the single source of truth for the extractor
+      architecture — matches the notebook exactly.
+
+Phase 6 note:
+    When the Hailo .hef compilation succeeds, a HailoVisualClassifier subclass
+    will override predict() to run the compiled model via hailort bindings.
+    The interface (input shape, output ClassificationResult) stays identical.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 
+import joblib
 import numpy as np
 import timm
 import torch
@@ -43,47 +59,56 @@ logger = logging.getLogger(__name__)
 
 class VisualClassifier:
     """
-    Wrapper around fine-tuned EfficientNet-B0 for SD bird species classification.
+    Wrapper around frozen EfficientNet-B0 + LogisticRegression for SD bird
+    species classification.
 
-    The ImageNet pretrained backbone is loaded via timm, then the classification
-    head is replaced and fine-tuned on NABirds SD species images.
+    The 1280-dim feature extractor is frozen at ImageNet pretrained weights.
+    A StandardScaler + LogisticRegression head trained on NABirds SD species
+    images provides the final classification.
 
     Usage:
         classifier = VisualClassifier.from_config("configs/paths.yaml")
-        frame = FramePreprocessor().preprocess(raw_frame)
-        result = classifier.predict(frame)
+        frame = preprocess_frame(raw_frame)           # (224, 224, 3) float32
+        result = classifier.predict(frame, camera_index=0)
     """
 
-    MODEL_VERSION = "efficientnet-b0-sdbirds-v1"
+    MODEL_VERSION = "frozen-efficientnet-b0-logreg-sdbirds-v1"
 
     def __init__(
         self,
-        model_path: str,
-        label_map_path: str,
+        extractor_path: str,
+        sklearn_path: str,
         species_list_path: str,
         device: str | None = None,
     ) -> None:
         """
         Args:
-            model_path: Path to fine-tuned checkpoint (.pt).
-                        Saved by notebooks/visual_efficientnet.ipynb.
-            label_map_path: Path to label_map.json (int index → species_code).
+            extractor_path:    Path to frozen EfficientNet backbone checkpoint (.pt).
+                               Saved by notebooks/visual_efficientnet.ipynb cell 28.
+            sklearn_path:      Path to sklearn pipeline bundle (.pkl).
+                               Contains scaler, clf, label_map, n_classes.
             species_list_path: Path to configs/species.yaml (code → names).
-            device: Torch device string ('cpu', 'cuda'). Auto-detected if None.
+            device:            Torch device string ('cpu', 'cuda'). Auto-detected if None.
+                               Note: feature extraction only — sklearn inference is CPU-only.
         """
-        self.model_path = Path(model_path)
-        self.label_map_path = Path(label_map_path)
+        self.extractor_path = Path(extractor_path)
+        self.sklearn_path = Path(sklearn_path)
         self.species_list_path = Path(species_list_path)
         self.device = torch.device(
             device if device else ("cuda" if torch.cuda.is_available() else "cpu")
         )
-        self._model: nn.Module | None = None
+
+        # Lazy-loaded on first predict() call
+        self._extractor: nn.Module | None = None
+        self._scaler = None  # sklearn StandardScaler
+        self._clf = None  # sklearn LogisticRegression
         self._label_map: dict[int, str] = {}  # int index → species_code
         self._species_meta: dict[str, dict] = {}  # code → {common_name, scientific_name}
 
         logger.info(
-            "VisualClassifier initialized | model=%s device=%s",
-            self.model_path,
+            "VisualClassifier initialized | extractor=%s sklearn=%s device=%s",
+            self.extractor_path,
+            self.sklearn_path,
             self.device,
         )
 
@@ -92,35 +117,54 @@ class VisualClassifier:
         """
         Construct a VisualClassifier from configs/paths.yaml.
 
+        Reads:
+            models.visual_frozen_extractor → extractor_path
+            models.visual_sklearn          → sklearn_path
+
         Args:
             config_path: Path to configs/paths.yaml.
 
         Returns:
-            Configured VisualClassifier instance (model not yet loaded).
+            Configured VisualClassifier instance (artifacts not yet loaded).
         """
         config_path = Path(config_path)
         with config_path.open() as f:
             cfg = yaml.safe_load(f)
 
-        model_path = cfg["models"]["visual_finetuned"]
-        label_map_path = cfg["models"]["label_map"]
+        extractor_path = cfg["models"]["visual_frozen_extractor"]
+        sklearn_path = cfg["models"]["visual_sklearn"]
         species_list_path = config_path.parent / "species.yaml"
 
         logger.info("VisualClassifier.from_config | paths.yaml=%s", config_path)
         return cls(
-            model_path=model_path,
-            label_map_path=label_map_path,
+            extractor_path=extractor_path,
+            sklearn_path=str(sklearn_path),
             species_list_path=str(species_list_path),
         )
 
     def _load(self) -> None:
         """
-        Lazily load model weights, label map, and species metadata.
+        Lazily load both artifacts and species metadata.
 
         Called automatically on first predict(). Separated from __init__ so
-        constructing a classifier in tests does not require weights on disk.
+        that constructing a VisualClassifier in tests does not require artifacts
+        on disk — only predict() requires them.
+
+        Raises:
+            RuntimeError: If either artifact file is missing.
         """
-        # Species metadata from species.yaml
+        if not self.extractor_path.exists():
+            raise RuntimeError(
+                f"Frozen extractor not found at {self.extractor_path}. "
+                "Run notebooks/visual_efficientnet.ipynb cell 28 to save artifacts."
+            )
+        if not self.sklearn_path.exists():
+            raise RuntimeError(
+                f"Sklearn pipeline not found at {self.sklearn_path}. "
+                "Run notebooks/visual_efficientnet.ipynb cell 28 to save artifacts."
+            )
+
+        # ── Species metadata ──────────────────────────────────────────────────
         with self.species_list_path.open() as f:
             species_cfg = yaml.safe_load(f)
         self._species_meta = {
@@ -131,99 +175,124 @@ class VisualClassifier:
             for s in species_cfg["species"]
         }
 
-        # Label map: {"0": "HOFI", "1": "MODO", ...}
-        with self.label_map_path.open() as f:
-            raw = json.load(f)
-        self._label_map = {int(k): v for k, v in raw.items()}
+        # ── Sklearn pipeline bundle ───────────────────────────────────────────
+        bundle = joblib.load(self.sklearn_path)
+        self._scaler = bundle["scaler"]
+        self._clf = bundle["clf"]
+        self._label_map = {int(k): v for k, v in bundle["label_map"].items()}
+        n_classes = bundle["n_classes"]
 
-        # EfficientNet-B0: load pretrained backbone, replace head
-        n_classes = len(self._label_map)
-        self._model = _build_efficientnet(n_classes=n_classes)
-        checkpoint = torch.load(self.model_path, map_location=self.device)
-        self._model.load_state_dict(checkpoint["model_state_dict"])
-        self._model.to(self.device)
-        self._model.eval()
+        # ── EfficientNet feature extractor ────────────────────────────────────
+        checkpoint = torch.load(self.extractor_path, map_location=self.device)
+        self._extractor = _build_efficientnet()
+        self._extractor.load_state_dict(checkpoint["model_state_dict"])
+        self._extractor.to(self.device)
+        self._extractor.eval()
+
+        # Freeze all parameters — no gradients needed at inference
+        for param in self._extractor.parameters():
+            param.requires_grad = False
 
         logger.info(
-            "VisualClassifier loaded | classes=%d device=%s weights=%s",
+            "VisualClassifier loaded | classes=%d device=%s extractor=%s",
             n_classes,
             self.device,
-            self.model_path,
+            self.extractor_path,
         )
 
-    def predict(self, frame: np.ndarray) -> ClassificationResult:
+    def predict(
+        self,
+        frame: np.ndarray,
+        camera_index: int | None = None,
+    ) -> ClassificationResult:
         """
         Run inference on a preprocessed frame and return the top species prediction.
 
+        Pipeline:
+            frame (224, 224, 3) HWC float32
+                → CHW transpose + batch dim → EfficientNet → 1280-dim feature
+                → StandardScaler → LogisticRegression.predict_proba()
+                → top species + confidence → ClassificationResult
+
         Args:
-            frame: Float32 array of shape (224, 224, 3), HWC, ImageNet-normalized,
-                   as returned by src.vision.preprocess.FramePreprocessor.
+            frame:        Float32 array of shape (224, 224, 3), HWC,
+                          ImageNet-normalized, as returned by preprocess_frame().
+            camera_index: Which camera captured this frame (0=primary, 1=secondary).
+                          Passed through to ClassificationResult for fusion tracking.
 
         Returns:
             ClassificationResult for the highest-confidence species prediction.
 
         Raises:
-            ValueError: If frame has unexpected shape or dtype.
-            RuntimeError: If model weights have not been trained yet.
+            ValueError:  If frame has unexpected shape.
+            RuntimeError: If artifacts have not been saved yet.
         """
-        if not self.model_path.exists():
-            raise RuntimeError(
-                f"Model weights not found at {self.model_path}. "
-                "Run notebooks/visual_efficientnet.ipynb to train the model first."
-            )
-
-        if self._model is None:
+        if self._extractor is None:
             self._load()
 
         if frame.ndim != 3 or frame.shape != (224, 224, 3):
-            raise ValueError(f"Expected frame of shape (224, 224, 3), got {frame.shape}")
+            raise ValueError(
+                f"Expected frame of shape (224, 224, 3), got {frame.shape}. "
+                "Ensure preprocess_frame() was called before predict()."
+            )
 
+        # ── Feature extraction ────────────────────────────────────────────────
         # HWC (224, 224, 3) → CHW (3, 224, 224) → batch (1, 3, 224, 224)
         tensor = (
-            torch.from_numpy(frame.astype(np.float32))
-            .permute(2, 0, 1)  # HWC → CHW
-            .unsqueeze(0)  # add batch dim
-            .to(self.device)
+            torch.from_numpy(frame.astype(np.float32)).permute(2, 0, 1).unsqueeze(0).to(self.device)
         )
 
         with torch.no_grad():
-            logits = self._model(tensor)  # (1, n_classes)
-            probs = torch.softmax(logits, dim=1)  # (1, n_classes)
-            confidence, idx = probs.max(dim=1)
+            # extractor outputs (1, 1280) — global average pooled features
+            features = self._extractor(tensor).cpu().numpy()  # shape (1, 1280)
 
-        species_code = self._label_map[idx.item()]
+        # ── Sklearn classification ────────────────────────────────────────────
+        features_scaled = self._scaler.transform(features)  # (1, 1280)
+        probas = self._clf.predict_proba(features_scaled)[0]  # (n_classes,)
+        pred_idx = int(probas.argmax())
+        confidence = float(probas[pred_idx])
+        species_code = self._label_map[pred_idx]
         meta = self._species_meta.get(species_code, {})
+
+        logger.debug(
+            "Visual predict: %s (%.3f) camera=%s",
+            species_code,
+            confidence,
+            camera_index,
+        )
 
         return ClassificationResult(
             species_code=species_code,
             common_name=meta.get("common_name", species_code),
             scientific_name=meta.get("scientific_name", ""),
-            confidence=float(confidence.item()),
+            confidence=confidence,
             modality=Modality.VISUAL,
             model_version=self.MODEL_VERSION,
+            camera_index=camera_index,
         )
 
 
-def _build_efficientnet(n_classes: int) -> nn.Module:
+def _build_efficientnet() -> nn.Module:
     """
-    Load EfficientNet-B0 pretrained on ImageNet and replace the classifier head.
+    Build the frozen EfficientNet-B0 feature extractor.
 
-    The backbone weights are frozen during early fine-tuning epochs, then
-    unfrozen for full fine-tuning (see notebooks/visual_efficientnet.ipynb).
+    Configuration:
+        num_classes=0      — removes the classification head, outputs features
+        global_pool="avg"  — global average pooling → 1280-dim output vector
+        pretrained=False   — weights loaded from checkpoint, not downloaded
 
-    This function is the single source of truth for the model architecture —
-    called here at inference and in the notebook at training time.
-
-    Args:
-        n_classes: Number of output classes. Must match label_map size.
+    This is the single source of truth for the extractor architecture.
+    Must match the extractor built in notebooks/visual_efficientnet.ipynb
+    cell 23 exactly — mismatches cause load_state_dict() to fail with
+    unexpected key errors.
 
     Returns:
-        EfficientNet-B0 with replaced classification head. Weights not loaded —
-        caller loads via load_state_dict().
+        EfficientNet-B0 feature extractor. Caller loads weights via
+        load_state_dict() and calls .eval() before inference.
     """
-    model = timm.create_model(
+    return timm.create_model(
         "efficientnet_b0",
-        pretrained=False,  # weights loaded from checkpoint, not downloaded here
-        num_classes=n_classes,
+        pretrained=False,  # weights loaded from checkpoint
+        num_classes=0,  # no classification head — outputs 1280-dim features
+        global_pool="avg",  # global average pool before output
     )
-    return model

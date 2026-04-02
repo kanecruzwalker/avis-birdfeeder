@@ -3,21 +3,55 @@
 # Notification channel configuration.
 # Toggle channels here — never in source code.
 # Credentials and secrets belong in .env, not here.
-
+#
+# Phase 5: log + print + push implemented.
+# Phase 6+: webhook channel — enable when backend exists.
+ 
 channels:
-  # Always-on: JSON log file (controlled by configs/paths.yaml)
+  # Always-on: JSONL log file (path in configs/paths.yaml).
+  # Local persistence layer — every observation logged regardless of
+  # other channel status. Source of truth until a database is added.
   log: true
-
-  # Console print — useful during development and live demos
+ 
+  # Console print — useful during development and live demos.
   print: true
-
-  # Mobile push notification (requires Phase 5 setup + .env credentials)
+ 
+  # Mobile push notification via Pushover.
+  # Requires PUSHOVER_USER_KEY and PUSHOVER_APP_TOKEN in .env.
+  # Sign up at https://pushover.net — free tier supports 10,000 msgs/month.
   push: false
-
-  # Email notification (requires Phase 5 setup + .env credentials)
+ 
+  # HTTP POST to a backend API (Phase 6+ — web app / mobile app).
+  # When enabled, posts full BirdObservation JSON to webhook.url below.
+  # Leave false until a backend endpoint exists.
+  webhook: false
+ 
+  # Email notification (future).
   email: false
-
+ 
 display:
-  # Format for console/notification output
-  # Available variables: {common_name}, {scientific_name}, {confidence}, {timestamp}
+  # Format for console and Pushover message body.
+  # Available variables: {common_name}, {scientific_name},
+  #                      {confidence}, {species_code}, {timestamp}
   message_template: "🐦 {common_name} ({scientific_name}) detected! Confidence: {confidence:.0%}"
+ 
+# ── Webhook configuration (Phase 6+) ─────────────────────────────────────────
+# Only read when channels.webhook is true.
+# Design intent: when a backend is built, point webhook.url at your
+# observations endpoint and enable the channel. The Pi agent will POST
+# the full BirdObservation JSON (species, confidence, timestamps,
+# image/audio paths, dual-camera results, stereo depth) to your backend,
+# which can persist to a database, serve a UI, and trigger richer alerts.
+webhook:
+  # Full URL of the backend endpoint that accepts BirdObservation POST requests.
+  # e.g. "https://api.avis.yourdomain.com/observations"
+  url: ""
+ 
+  # HTTP request timeout in seconds.
+  timeout_seconds: 5
+ 
+  # Optional Authorization header value for authenticated backends.
+  # e.g. "Bearer your_api_token_here"
+  # Leave empty for unauthenticated endpoints.
+  auth_header: ""
+ 

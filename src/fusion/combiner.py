@@ -3,30 +3,31 @@ src/fusion/combiner.py
 
 Combines audio and visual ClassificationResults into a single BirdObservation.
 
-Why a dedicated fusion module?
-    Audio and visual classifiers each produce a species prediction with a
-    confidence score. Neither is perfect in isolation:
-        - Audio alone may misidentify species with similar calls
-        - Visual alone may fail in poor lighting or partial occlusion
-    Combining both modalities produces a more reliable identification.
+Phase 5 additions:
+    fuse() now accepts an optional visual_result_2 from the secondary camera.
+    When both cameras produce results, the higher-confidence visual result
+    is used for fusion and the other is stored in BirdObservation.visual_result_2
+    for the observation record.
 
-Fusion strategies (configurable via configs/thresholds.yaml):
-    - "equal":    simple average of confidence scores
-    - "weighted": configurable per-modality weight (e.g. audio=0.55, visual=0.45)
-    - "max":      take whichever modality has higher confidence
+    This is the dual-camera strategy: classify independently from both cameras,
+    fuse the best visual result with audio. No stereo geometry is involved here —
+    that's Phase 6 (StereoEstimator). This module only handles confidence scores.
 
-If only one modality is available (e.g. bird is silent), fusion falls back
-gracefully to the single available result with its confidence unchanged.
+Why winner-takes-all for dual camera?
+    When Camera 0 sees a House Finch at 0.91 confidence and Camera 1 sees a
+    Spotted Towhee at 0.43 confidence, the right answer is House Finch —
+    Camera 0 had a better view. Taking the higher-confidence visual result
+    naturally handles cases where one camera is occluded or poorly framed.
+    When both cameras agree on species, we average their confidences before
+    fusing with audio.
 
-Species conflict resolution:
-    When audio and visual classifiers disagree on species, the higher-confidence
-    result wins regardless of strategy. Strategy only affects how confidence
-    scores are combined when both classifiers agree on species.
+Fusion strategies (unchanged from Phase 4):
+    "equal":    simple average of confidence scores
+    "weighted": configurable per-modality weight (audio=0.55, visual=0.45)
+    "max":      take whichever modality has higher confidence
 
-    Example: audio says HOFI (0.8), visual says WCSP (0.3).
-    The fused result is HOFI at whatever the weighted/equal/max score computes
-    to for the winning modality — because you can't meaningfully average
-    confidence scores for different species.
+Species conflict resolution (unchanged):
+    When audio and visual disagree, higher raw confidence wins regardless of strategy.
 """
 
 from __future__ import annotations
@@ -45,9 +46,16 @@ class ScoreFuser:
     """
     Fuses audio and visual classification results into a BirdObservation.
 
+    Phase 5: accepts optional visual_result_2 from secondary camera.
+    When both visual results are present, selects the best before fusing with audio.
+
     Usage:
-        fuser = ScoreFuser(strategy="weighted", audio_weight=0.55, visual_weight=0.45)
-        observation = fuser.fuse(audio_result, visual_result)
+        fuser = ScoreFuser.from_config("configs/thresholds.yaml")
+        observation = fuser.fuse(
+            audio_result=audio_result,
+            visual_result=result_cam0,
+            visual_result_2=result_cam1,   # optional, Phase 5 dual camera
+        )
     """
 
     VALID_STRATEGIES = {"equal", "weighted", "max"}
@@ -81,20 +89,13 @@ class ScoreFuser:
     @classmethod
     def from_config(cls, config_path: str) -> ScoreFuser:
         """
-        Construct a ScoreFuser from a thresholds config YAML.
-
-        Reads fusion.strategy, fusion.audio_weight, and fusion.visual_weight
-        from the YAML file. All other keys are ignored.
+        Construct a ScoreFuser from configs/thresholds.yaml.
 
         Args:
             config_path: Path to configs/thresholds.yaml.
 
         Returns:
             Configured ScoreFuser instance.
-
-        Raises:
-            FileNotFoundError: If config_path does not exist.
-            KeyError: If required fusion keys are missing from the config.
         """
         path = Path(config_path)
         if not path.exists():
@@ -109,79 +110,92 @@ class ScoreFuser:
         visual_weight = float(fusion_cfg.get("visual_weight", 0.45))
 
         logger.info(
-            "ScoreFuser loaded from config: strategy=%s audio_weight=%.2f visual_weight=%.2f",
+            "ScoreFuser loaded | strategy=%s audio_weight=%.2f visual_weight=%.2f",
             strategy,
             audio_weight,
             visual_weight,
         )
-        return cls(
-            strategy=strategy,
-            audio_weight=audio_weight,
-            visual_weight=visual_weight,
-        )
+        return cls(strategy=strategy, audio_weight=audio_weight, visual_weight=visual_weight)
 
     def fuse(
         self,
         audio_result: ClassificationResult | None = None,
         visual_result: ClassificationResult | None = None,
+        visual_result_2: ClassificationResult | None = None,
     ) -> BirdObservation:
         """
-        Combine one or both modality results into a BirdObservation.
+        Combine modality results into a BirdObservation.
 
-        Handles graceful degradation:
-            - Both provided, same species: fuse confidence scores by strategy
-            - Both provided, different species: winner-takes-all by confidence
-            - Only audio: use audio result directly (confidence unchanged)
-            - Only visual: use visual result directly (confidence unchanged)
-            - Neither: raises ValueError
+        Dual-camera handling (Phase 5):
+            When both visual_result and visual_result_2 are provided:
+            - If they agree on species: average their confidences, use that as
+              the visual confidence going into audio fusion.
+            - If they disagree: take the higher-confidence result. The other
+              is stored in BirdObservation.visual_result_2 for the record.
+            Either way, visual_result_2 is always stored in the observation.
+
+        Single-camera / single-modality graceful degradation (unchanged):
+            - Only audio: use audio result directly.
+            - Only one visual: use that visual result directly.
+            - Both audio and one visual: fuse as Phase 4.
 
         Args:
-            audio_result:  Output from AudioClassifier.predict(), or None.
-            visual_result: Output from VisualClassifier.predict(), or None.
+            audio_result:    Output from AudioClassifier.predict(), or None.
+            visual_result:   Output from primary camera VisualClassifier, or None.
+            visual_result_2: Output from secondary camera VisualClassifier, or None.
 
         Returns:
             BirdObservation with fused species and confidence.
 
         Raises:
-            ValueError: If both results are None.
+            ValueError: If all three results are None.
         """
-        if audio_result is None and visual_result is None:
-            raise ValueError("At least one of audio_result or visual_result must be provided.")
+        if audio_result is None and visual_result is None and visual_result_2 is None:
+            raise ValueError(
+                "At least one of audio_result, visual_result, or visual_result_2 "
+                "must be provided."
+            )
+
+        # ── Dual-camera visual selection ──────────────────────────────────────
+        # Resolve two visual results to one before audio fusion.
+        # The non-selected result is preserved in the observation as visual_result_2.
+        best_visual, secondary_visual = self._select_best_visual(visual_result, visual_result_2)
 
         # ── Single-modality graceful fallback ─────────────────────────────────
-        if audio_result is None:
-            logger.debug("fuse: audio unavailable, using visual result only")
-            return self._observation_from_single(visual_result)  # type: ignore[arg-type]
-        if visual_result is None:
-            logger.debug("fuse: visual unavailable, using audio result only")
-            return self._observation_from_single(audio_result)
+        if audio_result is None and best_visual is not None:
+            logger.debug("fuse: audio unavailable — using visual only")
+            return self._observation_from_single(best_visual, visual_result_2=secondary_visual)
+
+        if best_visual is None and audio_result is not None:
+            logger.debug("fuse: visual unavailable — using audio only")
+            return self._observation_from_single(audio_result, visual_result_2=None)
 
         # ── Both modalities available ─────────────────────────────────────────
-        if audio_result.species_code == visual_result.species_code:
-            # Agreement — fuse confidence scores
+        if audio_result.species_code == best_visual.species_code:
             fused_confidence = self._fuse_confidence(
-                audio_result.confidence, visual_result.confidence
+                audio_result.confidence, best_visual.confidence
             )
-            winner = audio_result  # use audio for species metadata (both agree)
+            winner = audio_result  # both agree — use audio for metadata
             logger.debug(
-                "fuse: both agree on %s — fused confidence=%.3f (strategy=%s)",
+                "fuse: agreement on %s — fused=%.3f (strategy=%s)",
                 winner.species_code,
                 fused_confidence,
                 self.strategy,
             )
         else:
             # Disagreement — winner takes all by raw confidence
-            if audio_result.confidence >= visual_result.confidence:
+            if audio_result.confidence >= best_visual.confidence:
                 winner = audio_result
+                fused_confidence = audio_result.confidence
             else:
-                winner = visual_result
-            fused_confidence = winner.confidence
+                winner = best_visual
+                fused_confidence = best_visual.confidence
             logger.debug(
                 "fuse: disagreement audio=%s(%.3f) visual=%s(%.3f) — winner=%s",
                 audio_result.species_code,
                 audio_result.confidence,
-                visual_result.species_code,
-                visual_result.confidence,
+                best_visual.species_code,
+                best_visual.confidence,
                 winner.species_code,
             )
 
@@ -191,21 +205,94 @@ class ScoreFuser:
             scientific_name=winner.scientific_name,
             fused_confidence=fused_confidence,
             audio_result=audio_result,
-            visual_result=visual_result,
+            visual_result=best_visual,
+            visual_result_2=secondary_visual,
         )
+
+    def _select_best_visual(
+        self,
+        result_1: ClassificationResult | None,
+        result_2: ClassificationResult | None,
+    ) -> tuple[ClassificationResult | None, ClassificationResult | None]:
+        """
+        Select the best visual result from two camera results.
+
+        Returns (best, other) where best goes into audio fusion and
+        other is stored as visual_result_2 in the observation.
+
+        When both cameras agree on species: the returned best_result has its
+        confidence replaced with the average of both cameras' confidences,
+        giving a more stable estimate when both views corroborate each other.
+        A new ClassificationResult is constructed to hold the averaged confidence.
+
+        When cameras disagree: the higher-confidence result wins outright.
+
+        Args:
+            result_1: Primary camera result, or None.
+            result_2: Secondary camera result, or None.
+
+        Returns:
+            Tuple of (best_result, secondary_result).
+            secondary_result is None if only one camera had a result.
+        """
+        if result_1 is None and result_2 is None:
+            return None, None
+
+        if result_1 is None:
+            return result_2, None
+
+        if result_2 is None:
+            return result_1, None
+
+        # Both cameras have results
+        if result_1.species_code == result_2.species_code:
+            # Agreement — average the confidences into a new result
+            avg_conf = (result_1.confidence + result_2.confidence) / 2.0
+            averaged = ClassificationResult(
+                species_code=result_1.species_code,
+                common_name=result_1.common_name,
+                scientific_name=result_1.scientific_name,
+                confidence=avg_conf,
+                modality=result_1.modality,
+                model_version=result_1.model_version,
+                camera_index=result_1.camera_index,  # primary camera index
+            )
+            logger.debug(
+                "Dual camera agreement on %s: cam0=%.3f cam1=%.3f avg=%.3f",
+                result_1.species_code,
+                result_1.confidence,
+                result_2.confidence,
+                avg_conf,
+            )
+            return averaged, result_2
+        else:
+            # Disagreement — higher confidence wins
+            if result_1.confidence >= result_2.confidence:
+                logger.debug(
+                    "Dual camera disagreement: cam0=%s(%.3f) beats cam1=%s(%.3f)",
+                    result_1.species_code,
+                    result_1.confidence,
+                    result_2.species_code,
+                    result_2.confidence,
+                )
+                return result_1, result_2
+            else:
+                logger.debug(
+                    "Dual camera disagreement: cam1=%s(%.3f) beats cam0=%s(%.3f)",
+                    result_2.species_code,
+                    result_2.confidence,
+                    result_1.species_code,
+                    result_1.confidence,
+                )
+                return result_2, result_1
 
     def _fuse_confidence(self, audio_conf: float, visual_conf: float) -> float:
         """
-        Combine two confidence scores according to the configured strategy.
-
-        Strategies:
-            equal:    arithmetic mean — (a + v) / 2
-            weighted: weighted average — a * audio_weight + v * visual_weight
-            max:      maximum of the two scores
+        Combine audio and visual confidence scores by configured strategy.
 
         Args:
-            audio_conf:  Confidence score from the audio classifier [0, 1].
-            visual_conf: Confidence score from the visual classifier [0, 1].
+            audio_conf:  Confidence score from audio classifier [0, 1].
+            visual_conf: Confidence score from visual classifier [0, 1].
 
         Returns:
             Fused confidence score in [0, 1].
@@ -217,18 +304,22 @@ class ScoreFuser:
         elif self.strategy == "max":
             return max(audio_conf, visual_conf)
         else:
-            # Should never reach here — constructor validates strategy
             raise ValueError(f"Unknown strategy: {self.strategy}")
 
-    def _observation_from_single(self, result: ClassificationResult) -> BirdObservation:
+    def _observation_from_single(
+        self,
+        result: ClassificationResult,
+        visual_result_2: ClassificationResult | None = None,
+    ) -> BirdObservation:
         """
-        Build a BirdObservation from a single ClassificationResult with no fusion.
+        Build a BirdObservation from a single primary result with no cross-modal fusion.
 
-        Confidence is passed through unchanged. The audio_result or visual_result
-        field on the observation is set based on the modality of the input.
+        Confidence is passed through unchanged. visual_result_2 is attached
+        to the observation for the record even in single-modality cases.
 
         Args:
-            result: A ClassificationResult from either modality.
+            result:          Primary ClassificationResult (audio or visual).
+            visual_result_2: Secondary camera result to attach, if available.
 
         Returns:
             BirdObservation wrapping the single result.
@@ -241,4 +332,5 @@ class ScoreFuser:
             fused_confidence=result.confidence,
             audio_result=result if is_audio else None,
             visual_result=result if not is_audio else None,
+            visual_result_2=visual_result_2,
         )

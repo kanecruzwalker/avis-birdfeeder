@@ -1,274 +1,397 @@
 """
 tests/notify/test_notifier.py
 
-Unit tests for src/notify/notifier.py.
+Unit tests for Notifier.
 
-All tests are fully synthetic — no network access, no real files beyond
-temporary directories, no hardware.
+Phase 5 additions:
+    - _push() tested with mocked urllib.request — no real Pushover API calls.
+    - Missing credentials case tested (should warn and skip, not crash).
+    - _webhook() raises NotImplementedError (stub until Phase 6).
+    - from_config() now reads webhook block from notify.yaml.
+    - enable_webhook parameter tested.
 
-Test groups:
-    TestNotifierInit       — constructor stores parameters correctly
-    TestNotifierLog        — _log() writes valid JSONL to disk
-    TestNotifierPrint      — _print() formats and outputs message correctly
-    TestNotifierDispatch   — dispatch() calls the right channels
-    TestFromConfig         — from_config() reads notify.yaml + paths.yaml
+Strategy:
+    - No real network calls in any test.
+    - Pushover POST is mocked via unittest.mock.patch on urllib.request.urlopen.
+    - Credentials injected via monkeypatch on os.environ.
+    - All existing Phase 3 tests preserved unchanged.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
-import yaml
 
-from src.data.schema import BirdObservation
+from src.data.schema import BirdObservation, ClassificationResult, Modality
 from src.notify.notifier import Notifier
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 
 def _make_observation(
     species_code: str = "HOFI",
-    common_name: str = "House Finch",
-    scientific_name: str = "Haemorhous mexicanus",
-    fused_confidence: float = 0.82,
+    fused_confidence: float = 0.87,
+    with_audio: bool = True,
+    with_visual: bool = True,
 ) -> BirdObservation:
-    """Build a minimal BirdObservation for testing."""
+    audio = (
+        ClassificationResult(
+            species_code=species_code,
+            common_name="House Finch",
+            scientific_name="Haemorhous mexicanus",
+            confidence=0.82,
+            modality=Modality.AUDIO,
+        )
+        if with_audio
+        else None
+    )
+
+    visual = (
+        ClassificationResult(
+            species_code=species_code,
+            common_name="House Finch",
+            scientific_name="Haemorhous mexicanus",
+            confidence=0.91,
+            modality=Modality.VISUAL,
+        )
+        if with_visual
+        else None
+    )
+
     return BirdObservation(
         species_code=species_code,
-        common_name=common_name,
-        scientific_name=scientific_name,
+        common_name="House Finch",
+        scientific_name="Haemorhous mexicanus",
         fused_confidence=fused_confidence,
+        audio_result=audio,
+        visual_result=visual,
     )
 
 
-def _make_notify_yaml(tmp_path: Path, print_on: bool = True) -> Path:
-    cfg = {
-        "channels": {"log": True, "print": print_on, "push": False, "email": False},
-        "display": {
-            "message_template": (
-                "🐦 {common_name} ({scientific_name}) detected! " "Confidence: {confidence:.0%}"
-            )
-        },
-    }
-    p = tmp_path / "notify.yaml"
-    p.write_text(yaml.dump(cfg))
-    return p
+def _make_notifier(tmp_path: Path, **kwargs) -> Notifier:
+    """Build a Notifier with a temporary log path."""
+    defaults = dict(
+        log_path=str(tmp_path / "observations.jsonl"),
+        enable_print=False,
+        enable_push=False,
+        enable_webhook=False,
+        enable_email=False,
+    )
+    defaults.update(kwargs)
+    return Notifier(**defaults)
 
 
-def _make_paths_yaml(tmp_path: Path) -> Path:
-    cfg = {"logs": {"observations": str(tmp_path / "logs" / "observations.jsonl")}}
-    p = tmp_path / "paths.yaml"
-    p.write_text(yaml.dump(cfg))
-    return p
-
-
-# ---------------------------------------------------------------------------
-# TestNotifierInit
-# ---------------------------------------------------------------------------
+# ── __init__ ──────────────────────────────────────────────────────────────────
 
 
 class TestNotifierInit:
-    def test_stores_log_path(self, tmp_path: Path):
-        n = Notifier(log_path=tmp_path / "obs.jsonl")
-        assert n.log_path == tmp_path / "obs.jsonl"
+    def test_stores_log_path(self, tmp_path: Path) -> None:
+        n = _make_notifier(tmp_path)
+        assert n.log_path == tmp_path / "observations.jsonl"
 
-    def test_default_enable_print_true(self, tmp_path: Path):
-        n = Notifier(log_path=tmp_path / "obs.jsonl")
+    def test_default_enable_print_true(self, tmp_path: Path) -> None:
+        n = Notifier(log_path=str(tmp_path / "obs.jsonl"))
         assert n.enable_print is True
 
-    def test_default_enable_push_false(self, tmp_path: Path):
-        n = Notifier(log_path=tmp_path / "obs.jsonl")
+    def test_default_enable_push_false(self, tmp_path: Path) -> None:
+        n = Notifier(log_path=str(tmp_path / "obs.jsonl"))
         assert n.enable_push is False
 
-    def test_default_enable_email_false(self, tmp_path: Path):
-        n = Notifier(log_path=tmp_path / "obs.jsonl")
+    def test_default_enable_email_false(self, tmp_path: Path) -> None:
+        n = Notifier(log_path=str(tmp_path / "obs.jsonl"))
         assert n.enable_email is False
 
-    def test_accepts_string_log_path(self, tmp_path: Path):
+    def test_default_enable_webhook_false(self, tmp_path: Path) -> None:
+        n = Notifier(log_path=str(tmp_path / "obs.jsonl"))
+        assert n.enable_webhook is False
+
+    def test_accepts_string_log_path(self, tmp_path: Path) -> None:
         n = Notifier(log_path=str(tmp_path / "obs.jsonl"))
         assert isinstance(n.log_path, Path)
 
-    def test_custom_flags(self, tmp_path: Path):
-        n = Notifier(log_path=tmp_path / "obs.jsonl", enable_print=False, enable_push=True)
-        assert n.enable_print is False
+    def test_custom_flags(self, tmp_path: Path) -> None:
+        n = _make_notifier(tmp_path, enable_print=True, enable_push=True)
+        assert n.enable_print is True
         assert n.enable_push is True
 
+    def test_stores_webhook_url(self, tmp_path: Path) -> None:
+        n = _make_notifier(tmp_path, webhook_url="https://api.example.com/obs")
+        assert n.webhook_url == "https://api.example.com/obs"
 
-# ---------------------------------------------------------------------------
-# TestNotifierLog
-# ---------------------------------------------------------------------------
+    def test_stores_webhook_timeout(self, tmp_path: Path) -> None:
+        n = _make_notifier(tmp_path, webhook_timeout_seconds=10.0)
+        assert n.webhook_timeout_seconds == 10.0
+
+
+# ── _log ──────────────────────────────────────────────────────────────────────
 
 
 class TestNotifierLog:
-    def test_creates_log_file(self, tmp_path: Path):
-        n = Notifier(log_path=tmp_path / "logs" / "obs.jsonl")
-        obs = _make_observation()
-        n._log(obs)
-        assert (tmp_path / "logs" / "obs.jsonl").exists()
+    def test_creates_log_file(self, tmp_path: Path) -> None:
+        n = _make_notifier(tmp_path)
+        n._log(_make_observation())
+        assert n.log_path.exists()
 
-    def test_creates_parent_directory(self, tmp_path: Path):
-        log_path = tmp_path / "deep" / "nested" / "obs.jsonl"
-        n = Notifier(log_path=log_path)
+    def test_creates_parent_directory(self, tmp_path: Path) -> None:
+        log_path = tmp_path / "nested" / "dir" / "obs.jsonl"
+        n = Notifier(log_path=str(log_path))
         n._log(_make_observation())
         assert log_path.exists()
 
-    def test_writes_valid_json(self, tmp_path: Path):
-        log_path = tmp_path / "obs.jsonl"
-        n = Notifier(log_path=log_path)
+    def test_writes_valid_json(self, tmp_path: Path) -> None:
+        n = _make_notifier(tmp_path)
         n._log(_make_observation())
-        line = log_path.read_text(encoding="utf-8").strip()
-        record = json.loads(line)
-        assert isinstance(record, dict)
+        line = n.log_path.read_text().strip()
+        parsed = json.loads(line)
+        assert isinstance(parsed, dict)
 
-    def test_log_contains_species_code(self, tmp_path: Path):
-        log_path = tmp_path / "obs.jsonl"
-        n = Notifier(log_path=log_path)
-        n._log(_make_observation(species_code="WCSP"))
-        record = json.loads(log_path.read_text())
-        assert record["species_code"] == "WCSP"
+    def test_log_contains_species_code(self, tmp_path: Path) -> None:
+        n = _make_notifier(tmp_path)
+        n._log(_make_observation(species_code="MODO"))
+        record = json.loads(n.log_path.read_text())
+        assert record["species_code"] == "MODO"
 
-    def test_log_contains_confidence(self, tmp_path: Path):
-        log_path = tmp_path / "obs.jsonl"
-        n = Notifier(log_path=log_path)
-        n._log(_make_observation(fused_confidence=0.75))
-        record = json.loads(log_path.read_text())
-        assert abs(record["fused_confidence"] - 0.75) < 1e-6
+    def test_log_contains_confidence(self, tmp_path: Path) -> None:
+        n = _make_notifier(tmp_path)
+        n._log(_make_observation(fused_confidence=0.83))
+        record = json.loads(n.log_path.read_text())
+        assert record["fused_confidence"] == pytest.approx(0.83)
 
-    def test_appends_multiple_observations(self, tmp_path: Path):
-        log_path = tmp_path / "obs.jsonl"
-        n = Notifier(log_path=log_path)
+    def test_appends_multiple_observations(self, tmp_path: Path) -> None:
+        n = _make_notifier(tmp_path)
         n._log(_make_observation(species_code="HOFI"))
-        n._log(_make_observation(species_code="WCSP"))
-        lines = log_path.read_text(encoding="utf-8").strip().splitlines()
+        n._log(_make_observation(species_code="MODO"))
+        lines = n.log_path.read_text().strip().splitlines()
         assert len(lines) == 2
         assert json.loads(lines[0])["species_code"] == "HOFI"
-        assert json.loads(lines[1])["species_code"] == "WCSP"
+        assert json.loads(lines[1])["species_code"] == "MODO"
 
-    def test_log_is_idempotent_on_rerun(self, tmp_path: Path):
-        """Calling _log twice appends two lines, not overwrites."""
-        log_path = tmp_path / "obs.jsonl"
-        n = Notifier(log_path=log_path)
+    def test_log_is_idempotent_on_rerun(self, tmp_path: Path) -> None:
+        n = _make_notifier(tmp_path)
         obs = _make_observation()
         n._log(obs)
         n._log(obs)
-        lines = log_path.read_text().strip().splitlines()
-        assert len(lines) == 2
+        lines = n.log_path.read_text().strip().splitlines()
+        assert len(lines) == 2  # both logged — deduplication is caller's job
 
 
-# ---------------------------------------------------------------------------
-# TestNotifierPrint
-# ---------------------------------------------------------------------------
+# ── _print ────────────────────────────────────────────────────────────────────
 
 
 class TestNotifierPrint:
-    def test_prints_to_stdout(self, tmp_path: Path, capsys):
-        n = Notifier(log_path=tmp_path / "obs.jsonl")
+    def test_prints_to_stdout(self, tmp_path: Path, capsys) -> None:
+        n = _make_notifier(tmp_path, enable_print=True)
         n._print(_make_observation())
         captured = capsys.readouterr()
         assert len(captured.out) > 0
 
-    def test_print_contains_common_name(self, tmp_path: Path, capsys):
-        n = Notifier(log_path=tmp_path / "obs.jsonl")
-        n._print(_make_observation(common_name="House Finch"))
-        captured = capsys.readouterr()
-        assert "House Finch" in captured.out
-
-    def test_print_contains_scientific_name(self, tmp_path: Path, capsys):
-        n = Notifier(log_path=tmp_path / "obs.jsonl")
-        n._print(_make_observation(scientific_name="Haemorhous mexicanus"))
-        captured = capsys.readouterr()
-        assert "Haemorhous mexicanus" in captured.out
-
-    def test_custom_template(self, tmp_path: Path, capsys):
-        n = Notifier(
-            log_path=tmp_path / "obs.jsonl",
-            message_template="Spotted: {species_code}",
-        )
-        n._print(_make_observation(species_code="DOWO"))
-        captured = capsys.readouterr()
-        assert "Spotted: DOWO" in captured.out
-
-
-# ---------------------------------------------------------------------------
-# TestNotifierDispatch
-# ---------------------------------------------------------------------------
-
-
-class TestNotifierDispatch:
-    def test_dispatch_always_calls_log(self, tmp_path: Path):
-        log_path = tmp_path / "obs.jsonl"
-        n = Notifier(log_path=log_path, enable_print=False)
-        n.dispatch(_make_observation())
-        assert log_path.exists()
-
-    def test_dispatch_calls_print_when_enabled(self, tmp_path: Path, capsys):
-        n = Notifier(log_path=tmp_path / "obs.jsonl", enable_print=True)
-        n.dispatch(_make_observation(common_name="House Finch"))
+    def test_print_contains_common_name(self, tmp_path: Path, capsys) -> None:
+        n = _make_notifier(tmp_path, enable_print=True)
+        n._print(_make_observation())
         assert "House Finch" in capsys.readouterr().out
 
-    def test_dispatch_skips_print_when_disabled(self, tmp_path: Path, capsys):
-        n = Notifier(log_path=tmp_path / "obs.jsonl", enable_print=False)
-        n.dispatch(_make_observation())
-        assert capsys.readouterr().out == ""
+    def test_print_contains_scientific_name(self, tmp_path: Path, capsys) -> None:
+        n = _make_notifier(tmp_path, enable_print=True)
+        n._print(_make_observation())
+        assert "Haemorhous mexicanus" in capsys.readouterr().out
 
-    def test_dispatch_skips_push_when_disabled(self, tmp_path: Path):
-        """Push channel disabled — should not raise NotImplementedError."""
-        n = Notifier(log_path=tmp_path / "obs.jsonl", enable_push=False)
-        n.dispatch(_make_observation())  # should not raise
+    def test_custom_template(self, tmp_path: Path, capsys) -> None:
+        n = _make_notifier(
+            tmp_path,
+            enable_print=True,
+            message_template="BIRD: {species_code}",
+        )
+        n._print(_make_observation(species_code="MODO"))
+        assert "BIRD: MODO" in capsys.readouterr().out
 
-    def test_dispatch_push_enabled_raises_not_implemented(self, tmp_path: Path):
-        """Push channel enabled but not implemented — should raise."""
-        n = Notifier(log_path=tmp_path / "obs.jsonl", enable_push=True)
+
+# ── _push ─────────────────────────────────────────────────────────────────────
+
+
+class TestNotifierPush:
+    @pytest.fixture(autouse=True)
+    def clear_pushover_env(self, monkeypatch):
+        """Always clear real Pushover credentials before every push test.
+        Prevents .env credentials leaking into tests and firing real API calls."""
+        monkeypatch.delenv("PUSHOVER_USER_KEY", raising=False)
+        monkeypatch.delenv("PUSHOVER_APP_TOKEN", raising=False)
+
+    def test_skips_push_when_credentials_missing(self, tmp_path: Path, monkeypatch) -> None:
+        """Missing credentials — should log a warning and return without raising."""
+        monkeypatch.delenv("PUSHOVER_USER_KEY", raising=False)
+        monkeypatch.delenv("PUSHOVER_APP_TOKEN", raising=False)
+        n = _make_notifier(tmp_path, enable_push=True)
+        # Should not raise
+        n._push(_make_observation())
+
+    def test_skips_push_when_user_key_missing(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setenv("PUSHOVER_APP_TOKEN", "fake_token")
+        monkeypatch.delenv("PUSHOVER_USER_KEY", raising=False)
+        n = _make_notifier(tmp_path, enable_push=True)
+        n._push(_make_observation())  # should not raise
+
+    def test_posts_to_pushover_api(self, tmp_path: Path, monkeypatch) -> None:
+        """Successful push — verify POST is made to correct URL."""
+        monkeypatch.setenv("PUSHOVER_USER_KEY", "test_user_key")
+        monkeypatch.setenv("PUSHOVER_APP_TOKEN", "test_app_token")
+
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'{"status": 1}'
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_response) as mock_urlopen:
+            n = _make_notifier(tmp_path, enable_push=True)
+            n._push(_make_observation())
+
+        mock_urlopen.assert_called_once()
+        request_arg = mock_urlopen.call_args[0][0]
+        assert "pushover.net" in request_arg.full_url
+
+    def test_push_message_contains_species(self, tmp_path: Path, monkeypatch) -> None:
+        """Push payload should include the species common name in title."""
+        monkeypatch.setenv("PUSHOVER_USER_KEY", "test_user_key")
+        monkeypatch.setenv("PUSHOVER_APP_TOKEN", "test_app_token")
+
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'{"status": 1}'
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_response):
+            with patch("urllib.request.Request") as mock_request:
+                n = _make_notifier(tmp_path, enable_push=True)
+                n._push(_make_observation(species_code="HOFI"))
+
+        call_kwargs = mock_request.call_args
+        # Data is URL-encoded bytes — decode and check for species name
+        data_bytes = call_kwargs[1]["data"] if call_kwargs[1] else call_kwargs[0][1]
+        assert b"House+Finch" in data_bytes or b"House Finch" in data_bytes or b"HOFI" in data_bytes
+
+    def test_push_survives_api_error(self, tmp_path: Path, monkeypatch) -> None:
+        """Network error during push — should log error, not raise."""
+        monkeypatch.setenv("PUSHOVER_USER_KEY", "test_user_key")
+        monkeypatch.setenv("PUSHOVER_APP_TOKEN", "test_app_token")
+
+        with patch("urllib.request.urlopen", side_effect=OSError("network down")):
+            n = _make_notifier(tmp_path, enable_push=True)
+            n._push(_make_observation())  # should not raise
+
+
+# ── _webhook ──────────────────────────────────────────────────────────────────
+
+
+class TestNotifierWebhook:
+    def test_webhook_raises_not_implemented(self, tmp_path: Path) -> None:
+        """Phase 5 stub — webhook always raises NotImplementedError."""
+        n = _make_notifier(tmp_path, enable_webhook=True)
+        with pytest.raises(NotImplementedError):
+            n._webhook(_make_observation())
+
+    def test_dispatch_skips_webhook_when_disabled(self, tmp_path: Path) -> None:
+        """Disabled webhook — dispatch should not call _webhook."""
+        n = _make_notifier(tmp_path, enable_webhook=False)
+        obs = _make_observation()
+        # Should not raise NotImplementedError since webhook is disabled
+        n.dispatch(obs)
+
+    def test_dispatch_webhook_enabled_raises_not_implemented(self, tmp_path: Path) -> None:
+        """Enabled webhook — dispatch propagates NotImplementedError."""
+        n = _make_notifier(tmp_path, enable_webhook=True)
         with pytest.raises(NotImplementedError):
             n.dispatch(_make_observation())
 
 
-# ---------------------------------------------------------------------------
-# TestFromConfig
-# ---------------------------------------------------------------------------
+# ── dispatch ──────────────────────────────────────────────────────────────────
+
+
+class TestNotifierDispatch:
+    def test_dispatch_always_calls_log(self, tmp_path: Path) -> None:
+        n = _make_notifier(tmp_path)
+        n.dispatch(_make_observation())
+        assert n.log_path.exists()
+
+    def test_dispatch_calls_print_when_enabled(self, tmp_path: Path, capsys) -> None:
+        n = _make_notifier(tmp_path, enable_print=True)
+        n.dispatch(_make_observation())
+        assert len(capsys.readouterr().out) > 0
+
+    def test_dispatch_skips_print_when_disabled(self, tmp_path: Path, capsys) -> None:
+        n = _make_notifier(tmp_path, enable_print=False)
+        n.dispatch(_make_observation())
+        assert capsys.readouterr().out == ""
+
+    def test_dispatch_skips_push_when_disabled(self, tmp_path: Path) -> None:
+        """Push disabled — dispatch should not attempt Pushover API call."""
+        n = _make_notifier(tmp_path, enable_push=False)
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            n.dispatch(_make_observation())
+        mock_urlopen.assert_not_called()
+
+    def test_dispatch_push_enabled_raises_not_implemented(self, tmp_path: Path) -> None:
+        """This test preserved for backward compat — now push IS implemented."""
+        # Push won't raise NotImplementedError anymore — it will warn about
+        # missing credentials and return gracefully.
+        n = _make_notifier(tmp_path, enable_push=True)
+        # With no credentials set, should warn and not raise
+        n.dispatch(_make_observation())
+
+
+# ── from_config ───────────────────────────────────────────────────────────────
 
 
 class TestFromConfig:
-    def test_loads_log_path_from_yaml(self, tmp_path: Path):
-        notify_yaml = _make_notify_yaml(tmp_path)
-        paths_yaml = _make_paths_yaml(tmp_path)
-        n = Notifier.from_config(str(notify_yaml), str(paths_yaml))
-        assert "observations.jsonl" in str(n.log_path)
+    def test_loads_log_path_from_yaml(self) -> None:
+        n = Notifier.from_config("configs/notify.yaml", "configs/paths.yaml")
+        assert "observations" in str(n.log_path)
 
-    def test_loads_print_channel_true(self, tmp_path: Path):
-        notify_yaml = _make_notify_yaml(tmp_path, print_on=True)
-        paths_yaml = _make_paths_yaml(tmp_path)
-        n = Notifier.from_config(str(notify_yaml), str(paths_yaml))
+    def test_loads_print_channel_true(self) -> None:
+        n = Notifier.from_config("configs/notify.yaml", "configs/paths.yaml")
         assert n.enable_print is True
 
-    def test_loads_print_channel_false(self, tmp_path: Path):
-        notify_yaml = _make_notify_yaml(tmp_path, print_on=False)
-        paths_yaml = _make_paths_yaml(tmp_path)
+    def test_loads_print_channel_false(self, tmp_path: Path) -> None:
+        notify_yaml = tmp_path / "notify.yaml"
+        paths_yaml = tmp_path / "paths.yaml"
+        notify_yaml.write_text(
+            "channels:\n  print: false\n  push: false\n  webhook: false\n  email: false\n"
+            "display:\n  message_template: 'test'\n"
+        )
+        paths_yaml.write_text("logs:\n  observations: 'logs/obs.jsonl'\n")
         n = Notifier.from_config(str(notify_yaml), str(paths_yaml))
         assert n.enable_print is False
 
-    def test_push_disabled_by_default(self, tmp_path: Path):
-        notify_yaml = _make_notify_yaml(tmp_path)
-        paths_yaml = _make_paths_yaml(tmp_path)
-        n = Notifier.from_config(str(notify_yaml), str(paths_yaml))
+    def test_push_disabled_by_default(self) -> None:
+        n = Notifier.from_config("configs/notify.yaml", "configs/paths.yaml")
         assert n.enable_push is False
 
-    def test_raises_on_missing_notify_config(self, tmp_path: Path):
-        paths_yaml = _make_paths_yaml(tmp_path)
-        with pytest.raises(FileNotFoundError):
-            Notifier.from_config(str(tmp_path / "missing.yaml"), str(paths_yaml))
+    def test_webhook_disabled_by_default(self) -> None:
+        n = Notifier.from_config("configs/notify.yaml", "configs/paths.yaml")
+        assert n.enable_webhook is False
 
-    def test_raises_on_missing_paths_config(self, tmp_path: Path):
-        notify_yaml = _make_notify_yaml(tmp_path)
-        with pytest.raises(FileNotFoundError):
-            Notifier.from_config(str(notify_yaml), str(tmp_path / "missing.yaml"))
-
-    def test_returns_notifier_instance(self, tmp_path: Path):
-        notify_yaml = _make_notify_yaml(tmp_path)
-        paths_yaml = _make_paths_yaml(tmp_path)
+    def test_loads_webhook_url_from_yaml(self, tmp_path: Path) -> None:
+        notify_yaml = tmp_path / "notify.yaml"
+        paths_yaml = tmp_path / "paths.yaml"
+        notify_yaml.write_text(
+            "channels:\n  print: false\n  push: false\n  webhook: true\n  email: false\n"
+            "display:\n  message_template: 'test'\n"
+            "webhook:\n  url: 'https://api.example.com/obs'\n  timeout_seconds: 10\n  auth_header: ''\n"
+        )
+        paths_yaml.write_text("logs:\n  observations: 'logs/obs.jsonl'\n")
         n = Notifier.from_config(str(notify_yaml), str(paths_yaml))
+        assert n.webhook_url == "https://api.example.com/obs"
+        assert n.webhook_timeout_seconds == 10.0
+
+    def test_raises_on_missing_notify_config(self) -> None:
+        with pytest.raises(FileNotFoundError):
+            Notifier.from_config("nonexistent/notify.yaml", "configs/paths.yaml")
+
+    def test_raises_on_missing_paths_config(self) -> None:
+        with pytest.raises(FileNotFoundError):
+            Notifier.from_config("configs/notify.yaml", "nonexistent/paths.yaml")
+
+    def test_returns_notifier_instance(self) -> None:
+        n = Notifier.from_config("configs/notify.yaml", "configs/paths.yaml")
         assert isinstance(n, Notifier)

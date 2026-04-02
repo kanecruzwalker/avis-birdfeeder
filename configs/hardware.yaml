@@ -1,0 +1,119 @@
+# configs/hardware.yaml
+#
+# Physical hardware constants for the Avis Raspberry Pi 5 deployment.
+# All values are specific to the assembled hardware — do not change without
+# re-validating the physical setup and re-running calibration if applicable.
+#
+# Tunable values (lighting, crop zone) should be adjusted after mounting
+# the cameras at the feeder. All other values reflect fixed hardware specs.
+#
+# Hardware:
+#   Compute:     Raspberry Pi 5 (8GB)
+#   Accelerator: Hailo AI HAT+ (HAILO8L, firmware 4.23.0)
+#   Cameras:     2× Pi Camera Module 3 (IMX708 sensor)
+#   Microphone:  Fifine USB (hw:2,0)
+ 
+# ── Microphone ────────────────────────────────────────────────────────────────
+microphone:
+  # sounddevice device index — confirmed via sd.query_devices() on Pi
+  device_index: 1
+ 
+  # Native sample rate reported by the device — no resampling needed
+  # BirdNET expects 48000 Hz — this matches exactly
+  sample_rate: 48000
+ 
+  # Mono input — device reports 1 input channel natively
+  channels: 1
+ 
+  # Duration of each capture window in seconds.
+  # BirdNET was trained on 3-second clips — do not change without retraining.
+  # Must match audio.window_seconds in thresholds.yaml.
+  window_seconds: 3.0
+ 
+  # dtype for sounddevice capture buffer
+  dtype: "float32"
+ 
+# ── Cameras ───────────────────────────────────────────────────────────────────
+cameras:
+  # Primary camera — left position in stereo pair, main classification feed
+  # picamera2 index confirmed via libcamera-hello --list-cameras on Pi
+  primary_index: 0
+ 
+  # Secondary camera — right position in stereo pair, secondary classification feed
+  secondary_index: 1
+ 
+  # Native capture resolution and framerate.
+  # 1536x864 @ 120fps is the highest-framerate mode on IMX708.
+  # Chosen for responsiveness — fast-moving birds are captured cleanly.
+  capture_width: 1536
+  capture_height: 864
+  capture_fps: 120
+ 
+  # EfficientNet-B0 classification input resolution.
+  # Frames are cropped to feeder_crop then downsampled to this size.
+  classification_width: 224
+  classification_height: 224
+ 
+  # ── Stereo geometry ────────────────────────────────────────────────────────
+  # Fixed at mount time — do not change after stereo calibration is run.
+  # 8cm horizontal baseline is optimal for feeder distances (~30-60cm).
+  # Cameras must be mounted parallel (not toed in), horizontal pair.
+  stereo:
+    baseline_cm: 8.0          # center-to-center lens separation in cm
+    orientation: "horizontal" # left-right pair — OpenCV stereo default
+ 
+    # Path to stereo calibration matrices (output of scripts/calibrate_stereo.py)
+    # File does not exist until Phase 6 calibration is run.
+    # StereoEstimator checks for this file and raises CalibrationRequired if absent.
+    calibration_path: "models/stereo/calibration.npz"
+ 
+  # ── Feeder crop zone ───────────────────────────────────────────────────────
+  # Pixel region of interest on the full 1536x864 capture frame.
+  # Crop is applied before downsampling to classification resolution.
+  # This constrains classification to the perch zone where a single bird
+  # typically sits, reducing multi-bird scene ambiguity (Phase 5 limitation).
+  #
+  # Tune these values after mounting cameras at the feeder:
+  #   1. Run scripts/capture_test_frame.py to save a test frame to disk
+  #   2. Open in any image viewer and note pixel coordinates of perch center
+  #   3. Set x/y so the crop is centered on the perch
+  # Default values assume centered feeder perch — adjust after mounting.
+  feeder_crop:
+    x: 568        # left edge of crop region (pixels from left of frame)
+    y: 232        # top edge of crop region (pixels from top of frame)
+    width: 400    # crop width in pixels (400px → downsampled to 224px)
+    height: 400   # crop height in pixels
+ 
+  # ── Motion detection ──────────────────────────────────────────────────────
+  # Minimum mean absolute pixel difference from background model to trigger
+  # classification. Prevents classifying empty frames between bird visits.
+  # Range [0.0, 1.0] on float32 normalized frames.
+  # Tune higher in windy conditions (foliage movement causes false triggers).
+  motion_threshold: 0.05
+ 
+  # Number of frames averaged to build the background model.
+  # Higher = more stable background, slower to adapt to lighting changes.
+  background_history: 30
+ 
+# ── Hailo AI HAT+ ─────────────────────────────────────────────────────────────
+hailo:
+  # PCIe device address confirmed via hailortcli scan on Pi
+  device_address: "0001:01:00.0"
+ 
+  # Architecture — HAILO8L (26 TOPS)
+  architecture: "HAILO8L"
+ 
+  # Firmware version confirmed via hailortcli fw-control identify
+  firmware_version: "4.23.0"
+ 
+  # Compiled model paths (.hef format — output of scripts/compile_hailo.py)
+  # These files do not exist until Hailo compilation is run in Phase 5.
+  # Classifiers check for .hef existence and fall back to CPU if absent.
+  models:
+    visual_hef: "models/hailo/visual_efficientnet.hef"
+    audio_hef:  "models/hailo/audio_birdnet.hef"
+ 
+  # Whether to attempt Hailo inference when .hef files are present.
+  # Set false to force CPU inference regardless of .hef availability.
+  # Useful for debugging classification accuracy independently of Hailo.
+  enabled: true
