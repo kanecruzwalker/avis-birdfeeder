@@ -27,6 +27,10 @@ data/processed/
 data/splits/
 data/captures/
 
+# Source modules under src/data/ are code -never ignore them
+!src/data/
+!src/data/*.py
+
 # ── Model weights (large — tracked separately or downloaded) ──────────────────
 models/**/*.pt
 models/**/*.pth
