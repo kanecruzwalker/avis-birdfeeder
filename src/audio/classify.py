@@ -299,3 +299,52 @@ class AudioClassifier:
             modality=Modality.AUDIO,
             model_version=self.MODEL_VERSION,
         )
+
+    # ── CNN from scratch — Phase 4 training artifact ──────────────────────────────
+
+
+# Retained for reproducibility. notebooks/audio_birdnet.ipynb imports
+# _build_audio_cnn() to train and evaluate the CNN baseline.
+# NOT used for inference in Phase 5 — BirdNET is the production audio model.
+
+
+def _build_audio_cnn(n_classes: int) -> nn.Module:
+    """
+    Build the lightweight CNN used for mel spectrogram classification.
+
+    Phase 4 training-only. Not used for inference in Phase 5.
+    Macro F1=0.089 on test set — substantially below BirdNET (F1=0.776).
+    Retained so notebooks/audio_birdnet.ipynb remains fully reproducible.
+
+    Architecture: three conv blocks + global average pooling + linear head.
+    Input: (1, n_mels, time_frames) — channel dim added by training loop.
+
+    Args:
+        n_classes: Number of output classes. Must match audio label_map size.
+
+    Returns:
+        Untrained nn.Module. Caller loads weights via load_state_dict().
+    """
+    return nn.Sequential(
+        # Block 1: (1, n_mels, T) → (32, n_mels/2, T/2)
+        nn.Conv2d(1, 32, kernel_size=3, padding=1),
+        nn.BatchNorm2d(32),
+        nn.ReLU(),
+        nn.MaxPool2d(2),
+        # Block 2: (32, n_mels/2, T/2) → (64, n_mels/4, T/4)
+        nn.Conv2d(32, 64, kernel_size=3, padding=1),
+        nn.BatchNorm2d(64),
+        nn.ReLU(),
+        nn.MaxPool2d(2),
+        # Block 3: (64, n_mels/4, T/4) → (128, n_mels/8, T/8)
+        nn.Conv2d(64, 128, kernel_size=3, padding=1),
+        nn.BatchNorm2d(128),
+        nn.ReLU(),
+        nn.MaxPool2d(2),
+        # Global average pool → (128,)
+        nn.AdaptiveAvgPool2d(1),
+        nn.Flatten(),
+        nn.Dropout(0.3),
+        nn.Linear(128, n_classes),
+        # No softmax — CrossEntropyLoss expects raw logits during training.
+    )
