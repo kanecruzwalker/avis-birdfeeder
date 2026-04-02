@@ -118,24 +118,34 @@ evaluated against baselines. All training on laptop/Colab.
 
 ---
 
-## ⏳ Phase 5 — Hardware Deployment
-**Goal:** System running end-to-end on Raspberry Pi 5 with Hailo inference.
+## 🔄 Phase 5 — Hardware Deployment
+**Goal:** System running end-to-end on Raspberry Pi 5 with live capture and push notifications.
 
-### Model compilation
+### Software (complete)
+- [x] `src/audio/capture.py` — Fifine USB mic capture (sounddevice) (PR #26)
+- [x] `src/vision/capture.py` — dual Pi Camera Module 3 capture (picamera2) (PR #26)
+- [x] `src/vision/stereo.py` — StereoEstimator Phase 6 stub (PR #26)
+- [x] `configs/hardware.yaml` — Pi hardware constants and feeder crop config (PR #26)
+- [x] `src/audio/classify.py` — updated to BirdNET (F1=0.776) (PR #26)
+- [x] `src/vision/classify.py` — updated to frozen EfficientNet + LogReg (F1=0.931) (PR #26)
+- [x] `src/agent/bird_agent.py` — live capture loop, cooldown suppression (PR #26)
+- [x] `src/notify/notifier.py` — Pushover push notifications, webhook stub (PR #26)
+- [x] `src/data/schema.py` — dual-camera and Phase 6 stereo fields added (PR #26)
+- [x] `src/fusion/combiner.py` — dual camera visual_result_2 support (PR #26)
+- [x] 331 tests passing, CI green
+- [x] Push notification confirmed working on device
+
+### Hardware (in progress)
+- [ ] `scripts/capture_test_frame.py` — save test frame to tune feeder crop coordinates
+- [ ] Mount cameras at 8cm horizontal baseline, rigid parallel mount
+- [ ] Copy source + configs to Pi, set `push: true` in Pi's `notify.yaml`
+- [ ] Run `capture_test_frame.py`, tune `hardware.yaml` feeder_crop to perch zone
+- [ ] Run `python -m src.agent.bird_agent` — verify live detection and push notification
+
+### Model compilation (deferred — Hailo optional for Phase 5)
 - [ ] Export audio model to ONNX → compile to Hailo .hef
 - [ ] Export visual model to ONNX → compile to Hailo .hef
 - [ ] Verify inference speed meets real-time requirements
-
-### Pi deployment
-- [ ] `src/audio/capture.py` — Fifine USB mic capture (sounddevice)
-- [ ] `src/vision/capture.py` — Pi Camera Module 3 capture (picamera2)
-- [ ] Hardware tests marked `@pytest.mark.hardware` — run on Pi only
-- [ ] End-to-end test: real bird detection, classification, notification
-
-### Notification
-- [ ] `src/notify/notifier.py` — push notification channel (Pushover)
-- [ ] Live stream via RTSP or Flask (secondary camera)
-
 ---
 
 ## ⏳ Phase 6 — Evaluation + Report
@@ -172,6 +182,6 @@ These are not course requirements but represent the long-term vision:
 | 2 | Preprocessing pipelines | WAV → spectrogram, image normalize, dataset download | ✅ |
 | 3 | Baseline models | KNN audio, SVM visual, fusion + notify implementation | ✅ |
 | 4 | Pretrained model integration | BirdNET + EfficientNet fine-tuned on SD species | ✅ |
-| 5 | Hardware deployment | Hailo inference, Pi cameras + mic, push notifications | ⏳ |
+| 5 | Hardware deployment | Hailo inference, Pi cameras + mic, push notifications | 🔄 |
 | 6 | Evaluation and report | Metrics, confusion matrices, demo recording, submission | ⏳ |
 ---
