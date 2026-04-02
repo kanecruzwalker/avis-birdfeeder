@@ -136,3 +136,20 @@ you only need to run this if you change the species list or retrain splits.
 **requirements.txt** — small typo, missing space before `#HOG`:
 ```
 scikit-image==0.24.0       # HOG (Histogram of Oriented Gradients)...
+
+
+## Generate Phase 5 Model Artifacts
+
+After downloading datasets and generating splits, train the Phase 5 inference models:
+
+**Audio (BirdNET):**
+BirdNET loads pretrained weights from the `birdnetlib` package automatically.
+No additional download or training step required.
+
+**Visual (frozen EfficientNet + LogReg):**
+Run `notebooks/visual_efficientnet.ipynb` (all cells, including cell 28 — Save artifacts).
+This generates:
+- `models/visual/frozen_extractor.pt` — EfficientNet-B0 feature extractor backbone
+- `models/visual/sklearn_pipeline.pkl` — StandardScaler + LogisticRegression pipeline
+
+These files are gitignored — run the notebook after cloning on any new machine.
