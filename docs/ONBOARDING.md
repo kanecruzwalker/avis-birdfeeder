@@ -11,8 +11,9 @@
 | Git | Any recent | https://git-scm.com/downloads |
 | VS Code | Any recent | https://code.visualstudio.com (recommended) |
 
-> ⚠️ Do NOT use Python 3.12+ or 3.14 — our ML dependencies require 3.11.
-> Verify with: `py -3.11 --version` → should show `Python 3.11.9`
+> ⚠️ Do NOT use Python 3.12+ or 3.14 on your dev machine — our ML
+> dependencies require 3.11. The Pi uses 3.13 but with a special two-venv
+> setup — see docs/SETUP.md for Pi deployment instructions.
 
 ---
 
@@ -43,7 +44,7 @@ pip install -r requirements-dev.txt
 ## 3. Verify everything works
 
 ```bash
-# Run all tests — should show 287 passed, 0 warnings
+# Run all tests — should show 331 passed, 0 warnings
 python -m pytest tests/ -v
 
 # Check lint is clean — should show "All checks passed!"
