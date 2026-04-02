@@ -10,6 +10,20 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+### Hardware deployment (Phase 5 complete)
+- Pi 5 running Debian Trixie (Python 3.13.5) with Hailo AI HAT+ confirmed
+- Dual IMX708 cameras (indices 0 and 1, 1536×864) confirmed via rpicam-hello
+- Fifine USB mic (sounddevice index 1, 48kHz) confirmed
+- Two-venv architecture: Python 3.13 venv for picamera2/visual pipeline,
+  pyenv Python 3.11 for BirdNET/tflite_runtime subprocess bridge
+- `scripts/audio_inference.py` — standalone BirdNET inference script for
+  Python 3.11 subprocess bridge (PR #30)
+- System validated live — fused detections confirmed:
+  Black Phoebe 100%, Mourning Dove 90%, House Finch 92%, House Sparrow 79%
+- Pending: camera physical mounting, feeder crop tuning, Hailo compilation
+
+---
+
 ## [0.5.0] — Phase 5 Hardware Deployment (Software Complete)
 
 ### Added
@@ -73,12 +87,6 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Test count
 - 331 passing, 0 failing, CI green
-
-### Pending (Phase 5 hardware)
-- Pi physical deployment — cameras mounted, agent running
-- `scripts/capture_test_frame.py` — utility to save test frame for feeder
-  crop tuning
-- Push notification end-to-end test with real bird at feeder
 
 ---
 
