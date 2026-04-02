@@ -10,6 +10,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+### Changed
+- `notebooks/results/phase5/` - moved phase5 result images into dedicated subfolder
+
+---
+
 ### Hardware deployment (Phase 5 complete)
 - Pi 5 running Debian Trixie (Python 3.13.5) with Hailo AI HAT+ confirmed
 - Dual IMX708 cameras (indices 0 and 1, 1536×864) confirmed via rpicam-hello
