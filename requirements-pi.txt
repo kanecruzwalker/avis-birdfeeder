@@ -1,0 +1,45 @@
+# Pi deployment requirements — Python 3.13 compatible
+# For Raspberry Pi 5, Debian Trixie, aarch64
+#
+# Use this instead of requirements.txt when deploying to the Pi.
+# Several pinned versions in requirements.txt cannot build on Python 3.13:
+#   - Pillow==10.3.0 - no 3.13 wheel, use >= 10.4.0
+#   - pydantic==2.7.1 — pydantic-core has no 3.13 wheel, use >=2.9.0
+#   - numpy==1.26.4 — no 3.13 wheel, use >=2.0.0
+#   - torch==2.3.0 — no 3.13 aarch64 wheel, use >=2.6.0
+#   - tensorflow-cpu==2.21.0 — no 3.13 aarch64 wheel, excluded entirely
+#     (BirdNET audio runs via Python 3.11 subprocess — see scripts/audio_inference.py)
+#
+# Install: pip install -r requirements-pi.txt
+
+# Core
+pydantic>=2.9.0
+pyyaml==6.0.1
+
+# Audio
+librosa==0.10.2
+sounddevice==0.4.7
+soundfile==0.12.1
+
+# Vision
+Pillow>=10.4.0
+numpy>=2.0.0
+opencv-python==4.10.0.84
+
+# ML
+torch>=2.6.0
+scikit-learn==1.8.0
+joblib==1.4.2
+timm==1.0.3
+
+# Data
+matplotlib==3.10.8
+pandas==3.0.2
+scikit-image==0.24.0
+
+# BirdNET
+birdnetlib==0.9.0
+resampy==0.4.3
+
+# Utilities
+python-dotenv==1.0.1
