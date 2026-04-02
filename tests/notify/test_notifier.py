@@ -212,7 +212,6 @@ class TestNotifierPrint:
 
 
 class TestNotifierPush:
-
     @pytest.fixture(autouse=True)
     def clear_pushover_env(self, monkeypatch):
         """Always clear real Pushover credentials before every push test.
