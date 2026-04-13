@@ -9,9 +9,10 @@ Supported channels (toggled via configs/notify.yaml):
                This is the local equivalent of a database — every observation is
                persisted here regardless of other channel status.
     - print:   Console output — useful for development and live demos.
-    - push:    Mobile push notification via Pushover (Phase 5).
+    - push:    Mobile push notification via Pushover (Phase 5+).
                Requires PUSHOVER_USER_KEY and PUSHOVER_APP_TOKEN in .env.
-    - webhook: HTTP POST to a configurable backend URL (Phase 6+).
+               Phase 6: attaches saved capture frame when available.
+    - webhook: HTTP POST to a configurable backend URL (Phase 6+ stub).
                Designed for the future web app / mobile app backend.
                When active, posts the full BirdObservation JSON to webhook_url
                so a backend can persist observations, serve a UI, and trigger
@@ -33,6 +34,7 @@ Design principles:
       and Phase 6 stereo depth estimates.
 
 Phase 5: log, print, push implemented. webhook stub defined.
+Phase 6: push image attachment via multipart POST. push config block added.
 Phase 6+: webhook implemented pointing at web app backend.
 
 Notification channel config (configs/notify.yaml):
@@ -43,6 +45,10 @@ Notification channel config (configs/notify.yaml):
         webhook: false    # Future web app backend
         email: false
 
+    push:
+        attach_image: true           # Phase 6 — attach capture frame
+        max_attachment_bytes: 2500000
+
 Pushover credentials (.env):
     PUSHOVER_USER_KEY=your_user_key_here
     PUSHOVER_APP_TOKEN=your_app_token_here
@@ -51,12 +57,12 @@ Webhook config (configs/notify.yaml, when enabled):
     webhook:
         url: "https://your-backend.com/api/observations"
         timeout_seconds: 5
-        # Optional: include Authorization header for authenticated backends
         auth_header: ""   # e.g. "Bearer your_token_here"
 """
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import os
@@ -80,6 +86,66 @@ except ImportError:
     logger.debug("python-dotenv not installed — reading credentials from environment directly.")
 
 
+def _build_multipart(
+    fields: dict[str, str],
+    attachment: bytes,
+    filename: str,
+    mime_type: str,
+) -> tuple[bytes, str]:
+    """
+    Build a multipart/form-data encoded request body.
+
+    Used by Notifier._push() when attaching a capture frame to a Pushover
+    notification. Pushover requires multipart/form-data when an attachment
+    is included — a plain application/x-www-form-urlencoded POST is used
+    for text-only notifications.
+
+    Args:
+        fields:     Form fields as string key-value pairs (token, user, title,
+                    message, priority, sound). All values must be strings.
+        attachment: Raw bytes of the file to attach.
+        filename:   Filename to report in the Content-Disposition header.
+                    Used by Pushover to determine display format.
+        mime_type:  MIME type of the attachment (e.g. "image/jpeg", "image/png").
+
+    Returns:
+        Tuple of (encoded_body_bytes, content_type_header_value).
+        The content_type_header_value includes the boundary parameter and
+        should be passed directly as the Content-Type request header value.
+
+    Example:
+        body, content_type = _build_multipart(
+            {"token": "abc", "user": "xyz", "message": "Bird!"},
+            frame_bytes,
+            "capture.jpg",
+            "image/jpeg",
+        )
+        req = urllib.request.Request(url, data=body,
+                                     headers={"Content-Type": content_type})
+    """
+    import uuid
+
+    boundary = uuid.uuid4().hex
+    body = io.BytesIO()
+
+    for key, value in fields.items():
+        body.write(f"--{boundary}\r\n".encode())
+        body.write(f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode())
+        body.write(f"{value}\r\n".encode())
+
+    body.write(f"--{boundary}\r\n".encode())
+    body.write(
+        f'Content-Disposition: form-data; name="attachment"; ' f'filename="{filename}"\r\n'.encode()
+    )
+    body.write(f"Content-Type: {mime_type}\r\n\r\n".encode())
+    body.write(attachment)
+    body.write(b"\r\n")
+    body.write(f"--{boundary}--\r\n".encode())
+
+    content_type = f"multipart/form-data; boundary={boundary}"
+    return body.getvalue(), content_type
+
+
 class Notifier:
     """
     Dispatches a BirdObservation to all active notification channels.
@@ -91,7 +157,7 @@ class Notifier:
         Current channels:
             _log()      — JSONL append (always active, local persistence)
             _print()    — Console output (development/demo)
-            _push()     — Pushover mobile push (Phase 5)
+            _push()     — Pushover mobile push with optional image attachment
             _webhook()  — HTTP POST to backend (Phase 6+ stub)
             _email()    — Email (future stub)
 
@@ -113,27 +179,36 @@ class Notifier:
         webhook_url: str = "",
         webhook_timeout_seconds: float = 5.0,
         webhook_auth_header: str = "",
+        push_attach_image: bool = True,
+        push_max_attachment_bytes: int = 2_500_000,
     ) -> None:
         """
         Args:
-            log_path:                 Path to the JSONL observation log file.
-                                      Parent directory is created on first write.
-            enable_print:             Whether to print observations to stdout.
-            enable_push:              Whether to send Pushover push notifications.
-                                      Requires PUSHOVER_USER_KEY and
-                                      PUSHOVER_APP_TOKEN environment variables.
-            enable_webhook:           Whether to POST observations to webhook_url.
-                                      Phase 6+ — set False until backend exists.
-            enable_email:             Whether to send email notifications (future).
-            message_template:         Format string for console/push display.
-                                      Supports: {common_name}, {scientific_name},
-                                      {confidence}, {species_code}, {timestamp}.
-            webhook_url:              Full URL for the webhook POST endpoint.
-                                      e.g. "https://api.yourdomain.com/observations"
-            webhook_timeout_seconds:  HTTP request timeout for webhook POSTs.
-            webhook_auth_header:      Optional Authorization header value.
-                                      e.g. "Bearer your_token" — sent as
-                                      Authorization header if non-empty.
+            log_path:                    Path to the JSONL observation log file.
+                                         Parent directory is created on first write.
+            enable_print:                Whether to print observations to stdout.
+            enable_push:                 Whether to send Pushover push notifications.
+                                         Requires PUSHOVER_USER_KEY and
+                                         PUSHOVER_APP_TOKEN environment variables.
+            enable_webhook:              Whether to POST observations to webhook_url.
+                                         Phase 6+ — set False until backend exists.
+            enable_email:                Whether to send email notifications (future).
+            message_template:            Format string for console/push display.
+                                         Supports: {common_name}, {scientific_name},
+                                         {confidence}, {species_code}, {timestamp}.
+            webhook_url:                 Full URL for the webhook POST endpoint.
+            webhook_timeout_seconds:     HTTP request timeout for webhook POSTs.
+            webhook_auth_header:         Optional Authorization header value.
+            push_attach_image:           If True, attach the saved capture frame to
+                                         Pushover notifications when image_path is
+                                         set on the observation and the file exists
+                                         within push_max_attachment_bytes.
+                                         Falls back to text-only silently if the
+                                         file is missing, too large, or unreadable.
+            push_max_attachment_bytes:   Maximum file size in bytes for push
+                                         attachments. Files exceeding this are
+                                         skipped and the notification is sent
+                                         text-only. Pushover hard limit is 2,621,440.
         """
         self.log_path = Path(log_path)
         self.enable_print = enable_print
@@ -144,13 +219,15 @@ class Notifier:
         self.webhook_url = webhook_url
         self.webhook_timeout_seconds = webhook_timeout_seconds
         self.webhook_auth_header = webhook_auth_header
+        self.push_attach_image = push_attach_image
+        self.push_max_attachment_bytes = push_max_attachment_bytes
 
     @classmethod
     def from_config(cls, notify_config_path: str, paths_config_path: str) -> Notifier:
         """
         Construct a Notifier from config YAMLs.
 
-        Reads channel toggles and webhook config from notify.yaml.
+        Reads channel toggles, push config, and webhook config from notify.yaml.
         Reads log_path from paths.yaml.
         Credentials (Pushover keys) are read from environment variables.
 
@@ -181,6 +258,7 @@ class Notifier:
         channels = notify_cfg.get("channels", {})
         display = notify_cfg.get("display", {})
         webhook_cfg = notify_cfg.get("webhook", {})
+        push_cfg = notify_cfg.get("push", {})
         log_path = paths_cfg.get("logs", {}).get("observations", "logs/observations.jsonl")
 
         template = display.get(
@@ -189,12 +267,13 @@ class Notifier:
         )
 
         logger.info(
-            "Notifier loaded | log=%s print=%s push=%s webhook=%s email=%s",
+            "Notifier loaded | log=%s print=%s push=%s webhook=%s email=%s attach_image=%s",
             log_path,
             channels.get("print", True),
             channels.get("push", False),
             channels.get("webhook", False),
             channels.get("email", False),
+            push_cfg.get("attach_image", True),
         )
 
         return cls(
@@ -207,6 +286,8 @@ class Notifier:
             webhook_url=webhook_cfg.get("url", ""),
             webhook_timeout_seconds=float(webhook_cfg.get("timeout_seconds", 5.0)),
             webhook_auth_header=webhook_cfg.get("auth_header", ""),
+            push_attach_image=push_cfg.get("attach_image", True),
+            push_max_attachment_bytes=int(push_cfg.get("max_attachment_bytes", 2_500_000)),
         )
 
     def dispatch(self, observation: BirdObservation) -> None:
@@ -296,25 +377,32 @@ class Notifier:
         Pushover API: single HTTPS POST to api.pushover.net/1/messages.json
         No SDK required — uses Python's built-in urllib.
 
-        Credentials are read from environment variables (set in .env):
-            PUSHOVER_USER_KEY   — your Pushover user key (from dashboard)
-            PUSHOVER_APP_TOKEN  — your application API token (from app settings)
+        Attachment behaviour (Phase 6):
+            If push.attach_image is true in notify.yaml and observation.image_path
+            points to an existing file within push.max_attachment_bytes, the saved
+            capture frame is attached using multipart/form-data encoding.
+            Falls back silently to text-only (application/x-www-form-urlencoded)
+            if any of the following are true:
+                - push_attach_image is False
+                - observation.image_path is None (audio-only detection)
+                - the file does not exist on disk
+                - the file exceeds push_max_attachment_bytes
+                - the file cannot be read (OSError)
+            Audio-only detections include a note in the message body.
 
-        Message format:
-            Title:   "🐦 {common_name}"
-            Message: "{scientific_name} | Confidence: {confidence:.0%}"
-                     + modality summary (audio ✓/– visual ✓/–)
-                     + stereo depth if available (Phase 6)
+        Phase 8 intent:
+            Stock reference image and audio clip attachment are deferred to
+            Phase 8 when the webhook backend can serve richer notifications.
+            The audio_path is always persisted to observations.jsonl regardless.
 
-        Priority: normal (0). Does not interrupt do-not-disturb.
-        Sound:    default Pushover sound.
-
-        If credentials are missing or the API call fails, the error is logged
-        and other channels continue unaffected.
+        Credentials (.env):
+            PUSHOVER_USER_KEY   — your Pushover user key
+            PUSHOVER_APP_TOKEN  — your application API token
 
         Args:
             observation: BirdObservation to deliver.
         """
+        import mimetypes
         import urllib.parse
         import urllib.request
 
@@ -328,7 +416,7 @@ class Notifier:
             )
             return
 
-        # ── Build message ─────────────────────────────────────────────────────
+        # ── Build message body ────────────────────────────────────────────
         audio_marker = "✓" if observation.audio_result else "–"
         visual_marker = "✓" if observation.visual_result else "–"
         dual_cam_note = " (dual cam)" if observation.has_dual_camera else ""
@@ -339,6 +427,9 @@ class Notifier:
             f"Audio {audio_marker}  Visual {visual_marker}{dual_cam_note}",
         ]
 
+        if not observation.visual_result and observation.audio_result:
+            message_lines.append("Audio-only detection — no visual captured.")
+
         # Stereo depth — populated in Phase 6 when StereoEstimator is active
         if observation.has_stereo_estimate and observation.estimated_size_cm:
             message_lines.append(
@@ -346,7 +437,6 @@ class Notifier:
                 f"Depth: {observation.estimated_depth_cm:.0f} cm"
             )
 
-        # Timestamp in readable local format
         message_lines.append(observation.timestamp.strftime("%H:%M:%S UTC"))
 
         payload = {
@@ -354,24 +444,65 @@ class Notifier:
             "user": user_key,
             "title": f"🐦 {observation.common_name}",
             "message": "\n".join(message_lines),
-            "priority": "0",  # normal — respects quiet hours
-            "sound": "none",  # silent — feeder alerts should not be intrusive
+            "priority": "0",
+            "sound": "none",
         }
 
-        # ── POST to Pushover API ──────────────────────────────────────────────
+        # ── Resolve attachment ────────────────────────────────────────────
+        attachment_bytes: bytes | None = None
+        attachment_filename: str = "capture.jpg"
+        attachment_mime: str = "image/jpeg"
+
+        best_image = observation.image_path or observation.image_path_2
+        if self.push_attach_image and best_image:
+            image_file = Path(best_image)
+            if not image_file.exists():
+                logger.debug("Push attachment: image_path set but file not found — %s", image_file)
+            elif image_file.stat().st_size > self.push_max_attachment_bytes:
+                logger.warning(
+                    "Push attachment: file exceeds %d bytes (%d) — sending text-only. "
+                    "Reduce feeder_crop size or compress frames to enable attachments.",
+                    self.push_max_attachment_bytes,
+                    image_file.stat().st_size,
+                )
+            else:
+                try:
+                    attachment_bytes = image_file.read_bytes()
+                    attachment_filename = image_file.name
+                    mime, _ = mimetypes.guess_type(str(image_file))
+                    attachment_mime = mime or "image/jpeg"
+                    logger.debug(
+                        "Push attachment: %s (%d bytes)",
+                        attachment_filename,
+                        len(attachment_bytes),
+                    )
+                except OSError as exc:
+                    logger.error("Push attachment: failed to read image file — %s", exc)
+
+        # ── POST to Pushover API ──────────────────────────────────────────
         try:
-            data = urllib.parse.urlencode(payload).encode("utf-8")
+            if attachment_bytes is not None:
+                data, content_type = _build_multipart(
+                    payload, attachment_bytes, attachment_filename, attachment_mime
+                )
+            else:
+                data = urllib.parse.urlencode(payload).encode("utf-8")
+                content_type = "application/x-www-form-urlencoded"
+
             req = urllib.request.Request(
                 "https://api.pushover.net/1/messages.json",
                 data=data,
+                headers={"Content-Type": content_type},
                 method="POST",
             )
             with urllib.request.urlopen(req, timeout=5) as response:
                 body = response.read().decode("utf-8")
                 status = json.loads(body).get("status", 0)
                 if status == 1:
+                    attached = "with image" if attachment_bytes else "text-only"
                     logger.info(
-                        "Push sent: %s (%.0f%%)",
+                        "Push sent (%s): %s (%.0f%%)",
+                        attached,
                         observation.species_code,
                         observation.fused_confidence * 100,
                     )
@@ -396,7 +527,7 @@ class Notifier:
             - Drive a live feed viewer
             - Support multi-feeder aggregation
 
-        Implementation sketch for Phase 6:
+        Implementation sketch for Phase 6+:
             import urllib.request, urllib.parse
 
             headers = {"Content-Type": "application/json"}
@@ -427,7 +558,7 @@ class Notifier:
             observation: BirdObservation to deliver.
 
         Raises:
-            NotImplementedError: Always in Phase 5.
+            NotImplementedError: Always in Phase 5/6. Implement in Phase 6+.
         """
         raise NotImplementedError(
             "Webhook channel is not yet implemented. "

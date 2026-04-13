@@ -5,36 +5,66 @@
 # Credentials and secrets belong in .env, not here.
 #
 # Phase 5: log + print + push implemented.
+# Phase 6: push image attachment implemented.
 # Phase 6+: webhook channel — enable when backend exists.
- 
+
 channels:
   # Always-on: JSONL log file (path in configs/paths.yaml).
   # Local persistence layer — every observation logged regardless of
   # other channel status. Source of truth until a database is added.
   log: true
- 
+
   # Console print — useful during development and live demos.
   print: true
- 
+
   # Mobile push notification via Pushover.
   # Requires PUSHOVER_USER_KEY and PUSHOVER_APP_TOKEN in .env.
   # Sign up at https://pushover.net — free tier supports 10,000 msgs/month.
   push: false
- 
+
   # HTTP POST to a backend API (Phase 6+ — web app / mobile app).
   # When enabled, posts full BirdObservation JSON to webhook.url below.
   # Leave false until a backend endpoint exists.
   webhook: false
- 
+
   # Email notification (future).
   email: false
- 
+
 display:
   # Format for console and Pushover message body.
   # Available variables: {common_name}, {scientific_name},
   #                      {confidence}, {species_code}, {timestamp}
   message_template: "🐦 {common_name} ({scientific_name}) detected! Confidence: {confidence:.0%}"
- 
+
+# ── Push notification configuration (Phase 6) ─────────────────────────────────
+# Only read when channels.push is true.
+# Controls whether the saved capture frame is attached to Pushover notifications.
+#
+# Attachment behaviour:
+#   If attach_image is true and the observation has an image_path pointing to
+#   an existing file within max_attachment_bytes, the frame is attached to the
+#   Pushover notification as a multipart POST.
+#   Falls back silently to text-only if:
+#     - attach_image is false
+#     - image_path is None (audio-only detection)
+#     - the file does not exist on disk
+#     - the file exceeds max_attachment_bytes
+#
+# Phase 8 intent:
+#   Audio clip attachment and stock species reference image are deferred to
+#   Phase 8 when the webhook backend can serve richer notifications.
+#   Audio-only detections currently receive text-only push; the audio_path
+#   is always persisted to observations.jsonl for later retrieval.
+push:
+  # Attach the saved capture frame to the notification when available.
+  # Set false to always send text-only push (useful for debugging message content).
+  attach_image: true
+
+  # Maximum attachment size in bytes. Files exceeding this are skipped and
+  # the notification is sent text-only. Pushover hard limit is 2,621,440 bytes.
+  # Crop frames at 400x400 PNG are typically 80-200KB — well within this limit.
+  max_attachment_bytes: 2500000
+
 # ── Webhook configuration (Phase 6+) ─────────────────────────────────────────
 # Only read when channels.webhook is true.
 # Design intent: when a backend is built, point webhook.url at your
@@ -46,12 +76,11 @@ webhook:
   # Full URL of the backend endpoint that accepts BirdObservation POST requests.
   # e.g. "https://api.avis.yourdomain.com/observations"
   url: ""
- 
+
   # HTTP request timeout in seconds.
   timeout_seconds: 5
- 
+
   # Optional Authorization header value for authenticated backends.
   # e.g. "Bearer your_api_token_here"
   # Leave empty for unauthenticated endpoints.
   auth_header: ""
- 

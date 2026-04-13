@@ -1,20 +1,27 @@
 """
 tests/notify/test_notifier.py
 
-Unit tests for Notifier.
+Unit tests for Notifier and _build_multipart.
 
-Phase 5 additions:
-    - _push() tested with mocked urllib.request — no real Pushover API calls.
-    - Missing credentials case tested (should warn and skip, not crash).
-    - _webhook() raises NotImplementedError (stub until Phase 6).
-    - from_config() now reads webhook block from notify.yaml.
-    - enable_webhook parameter tested.
+Phase 6 additions:
+    - _make_notifier() defaults extended with push_attach_image=False so all
+      existing tests explicitly opt out of attachment behaviour.
+    - _build_multipart() tested as an independent pure function (TestBuildMultipart).
+    - _push() image attachment paths tested exhaustively (TestNotifierPushAttachment):
+        - multipart POST sent when valid image file is present
+        - text-only fallback when attach_image is False
+        - text-only fallback when image_path is None (audio-only detection)
+        - text-only fallback when file does not exist on disk
+        - text-only fallback when file exceeds max_attachment_bytes
+        - audio-only message note present in text-only push body
+        - graceful survival when image file is unreadable (OSError)
+    - from_config() extended to cover push block loading.
 
-Strategy:
+Strategy (unchanged):
     - No real network calls in any test.
-    - Pushover POST is mocked via unittest.mock.patch on urllib.request.urlopen.
+    - Pushover POST mocked via unittest.mock.patch on urllib.request.urlopen.
     - Credentials injected via monkeypatch on os.environ.
-    - All existing Phase 3 tests preserved unchanged.
+    - All existing Phase 3/5 tests preserved unchanged.
 """
 
 from __future__ import annotations
@@ -26,7 +33,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.data.schema import BirdObservation, ClassificationResult, Modality
-from src.notify.notifier import Notifier
+from src.notify.notifier import Notifier, _build_multipart
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -72,13 +79,21 @@ def _make_observation(
 
 
 def _make_notifier(tmp_path: Path, **kwargs) -> Notifier:
-    """Build a Notifier with a temporary log path."""
+    """
+    Build a Notifier with a temporary log path and all channels disabled.
+
+    push_attach_image defaults to False so that existing tests which do not
+    exercise attachment behaviour are not affected by Phase 6 changes.
+    Tests that specifically test attachment pass push_attach_image=True
+    explicitly via kwargs.
+    """
     defaults = dict(
         log_path=str(tmp_path / "observations.jsonl"),
         enable_print=False,
         enable_push=False,
         enable_webhook=False,
         enable_email=False,
+        push_attach_image=False,
     )
     defaults.update(kwargs)
     return Notifier(**defaults)
@@ -108,6 +123,14 @@ class TestNotifierInit:
         n = Notifier(log_path=str(tmp_path / "obs.jsonl"))
         assert n.enable_webhook is False
 
+    def test_default_push_attach_image_true(self, tmp_path: Path) -> None:
+        n = Notifier(log_path=str(tmp_path / "obs.jsonl"))
+        assert n.push_attach_image is True
+
+    def test_default_push_max_attachment_bytes(self, tmp_path: Path) -> None:
+        n = Notifier(log_path=str(tmp_path / "obs.jsonl"))
+        assert n.push_max_attachment_bytes == 2_500_000
+
     def test_accepts_string_log_path(self, tmp_path: Path) -> None:
         n = Notifier(log_path=str(tmp_path / "obs.jsonl"))
         assert isinstance(n.log_path, Path)
@@ -124,6 +147,14 @@ class TestNotifierInit:
     def test_stores_webhook_timeout(self, tmp_path: Path) -> None:
         n = _make_notifier(tmp_path, webhook_timeout_seconds=10.0)
         assert n.webhook_timeout_seconds == 10.0
+
+    def test_stores_push_attach_image(self, tmp_path: Path) -> None:
+        n = _make_notifier(tmp_path, push_attach_image=True)
+        assert n.push_attach_image is True
+
+    def test_stores_push_max_attachment_bytes(self, tmp_path: Path) -> None:
+        n = _make_notifier(tmp_path, push_max_attachment_bytes=1_000_000)
+        assert n.push_max_attachment_bytes == 1_000_000
 
 
 # ── _log ──────────────────────────────────────────────────────────────────────
@@ -267,7 +298,6 @@ class TestNotifierPush:
                 n._push(_make_observation(species_code="HOFI"))
 
         call_kwargs = mock_request.call_args
-        # Data is URL-encoded bytes — decode and check for species name
         data_bytes = call_kwargs[1]["data"] if call_kwargs[1] else call_kwargs[0][1]
         assert b"House+Finch" in data_bytes or b"House Finch" in data_bytes or b"HOFI" in data_bytes
 
@@ -281,12 +311,184 @@ class TestNotifierPush:
             n._push(_make_observation())  # should not raise
 
 
+# ── _build_multipart ──────────────────────────────────────────────────────────
+
+
+class TestBuildMultipart:
+    def test_returns_bytes_and_content_type(self) -> None:
+        body, ct = _build_multipart({"token": "t"}, b"imgdata", "img.jpg", "image/jpeg")
+        assert isinstance(body, bytes)
+        assert "multipart/form-data" in ct
+
+    def test_content_type_contains_boundary(self) -> None:
+        _, ct = _build_multipart({"token": "t"}, b"imgdata", "img.jpg", "image/jpeg")
+        assert "boundary=" in ct
+
+    def test_body_contains_field_value(self) -> None:
+        body, _ = _build_multipart({"token": "mytoken"}, b"data", "f.jpg", "image/jpeg")
+        assert b"mytoken" in body
+
+    def test_body_contains_filename(self) -> None:
+        body, _ = _build_multipart({"token": "t"}, b"data", "capture.png", "image/png")
+        assert b"capture.png" in body
+
+    def test_body_contains_attachment_bytes(self) -> None:
+        payload = b"\x89PNG\r\nfakeimage"
+        body, _ = _build_multipart({"token": "t"}, payload, "img.png", "image/png")
+        assert payload in body
+
+    def test_body_contains_mime_type(self) -> None:
+        body, _ = _build_multipart({"token": "t"}, b"data", "img.jpg", "image/jpeg")
+        assert b"image/jpeg" in body
+
+    def test_multiple_fields_all_present(self) -> None:
+        body, _ = _build_multipart(
+            {"token": "tok", "user": "usr", "title": "Bird"},
+            b"img",
+            "img.jpg",
+            "image/jpeg",
+        )
+        assert b"tok" in body
+        assert b"usr" in body
+        assert b"Bird" in body
+
+    def test_boundary_closes_body(self) -> None:
+        body, ct = _build_multipart({"k": "v"}, b"data", "f.jpg", "image/jpeg")
+        boundary = ct.split("boundary=")[1]
+        assert f"--{boundary}--".encode() in body
+
+
+# ── _push image attachment ────────────────────────────────────────────────────
+
+
+class TestNotifierPushAttachment:
+    @pytest.fixture(autouse=True)
+    def set_credentials(self, monkeypatch):
+        """Inject valid Pushover credentials for all attachment tests."""
+        monkeypatch.setenv("PUSHOVER_USER_KEY", "test_user_key")
+        monkeypatch.setenv("PUSHOVER_APP_TOKEN", "test_app_token")
+
+    def _mock_response(self) -> MagicMock:
+        mock = MagicMock()
+        mock.read.return_value = b'{"status": 1}'
+        mock.__enter__ = lambda s: s
+        mock.__exit__ = MagicMock(return_value=False)
+        return mock
+
+    def _obs_with_image(self, image_path: str) -> BirdObservation:
+        obs = _make_observation()
+        return obs.model_copy(update={"image_path": image_path})
+
+    def test_multipart_sent_when_image_exists(self, tmp_path: Path) -> None:
+        """Valid image file → POST uses multipart/form-data."""
+        img = tmp_path / "capture.jpg"
+        img.write_bytes(b"\xff\xd8\xff" + b"0" * 100)  # minimal fake JPEG
+        obs = self._obs_with_image(str(img))
+
+        with patch("urllib.request.urlopen", return_value=self._mock_response()) as mock_open:
+            n = _make_notifier(tmp_path, enable_push=True, push_attach_image=True)
+            n._push(obs)
+
+        req = mock_open.call_args[0][0]
+        assert "multipart/form-data" in req.get_header("Content-type")
+
+    def test_text_only_when_attach_image_false(self, tmp_path: Path) -> None:
+        """attach_image=False → text-only even when file exists."""
+        img = tmp_path / "capture.jpg"
+        img.write_bytes(b"fakeimage")
+        obs = self._obs_with_image(str(img))
+
+        with patch("urllib.request.urlopen", return_value=self._mock_response()) as mock_open:
+            n = _make_notifier(tmp_path, enable_push=True, push_attach_image=False)
+            n._push(obs)
+
+        req = mock_open.call_args[0][0]
+        assert "application/x-www-form-urlencoded" in req.get_header("Content-type")
+
+    def test_text_only_when_image_path_none(self, tmp_path: Path) -> None:
+        """No image_path on observation → text-only (e.g. audio-only detection)."""
+        obs = _make_observation()  # image_path is None by default
+
+        with patch("urllib.request.urlopen", return_value=self._mock_response()) as mock_open:
+            n = _make_notifier(tmp_path, enable_push=True, push_attach_image=True)
+            n._push(obs)
+
+        req = mock_open.call_args[0][0]
+        assert "application/x-www-form-urlencoded" in req.get_header("Content-type")
+
+    def test_text_only_when_image_file_missing(self, tmp_path: Path) -> None:
+        """image_path set but file does not exist → text-only fallback."""
+        obs = self._obs_with_image(str(tmp_path / "nonexistent.jpg"))
+
+        with patch("urllib.request.urlopen", return_value=self._mock_response()) as mock_open:
+            n = _make_notifier(tmp_path, enable_push=True, push_attach_image=True)
+            n._push(obs)
+
+        req = mock_open.call_args[0][0]
+        assert "application/x-www-form-urlencoded" in req.get_header("Content-type")
+
+    def test_text_only_when_file_exceeds_size_limit(self, tmp_path: Path) -> None:
+        """File larger than max_attachment_bytes → text-only fallback."""
+        img = tmp_path / "big.jpg"
+        img.write_bytes(b"x" * 100)
+        obs = self._obs_with_image(str(img))
+
+        with patch("urllib.request.urlopen", return_value=self._mock_response()) as mock_open:
+            n = _make_notifier(
+                tmp_path,
+                enable_push=True,
+                push_attach_image=True,
+                push_max_attachment_bytes=50,  # smaller than our 100-byte file
+            )
+            n._push(obs)
+
+        req = mock_open.call_args[0][0]
+        assert "application/x-www-form-urlencoded" in req.get_header("Content-type")
+
+    def test_audio_only_note_in_message(self, tmp_path: Path) -> None:
+        """Audio-only detection → message body contains note about no visual."""
+        obs = _make_observation(with_visual=False)  # no image_path, no visual result
+
+        with patch("urllib.request.urlopen", return_value=self._mock_response()):
+            with patch("urllib.request.Request") as mock_req:
+                mock_req.return_value = MagicMock()
+                n = _make_notifier(tmp_path, enable_push=True, push_attach_image=True)
+                n._push(obs)
+
+        data = mock_req.call_args[1]["data"] if mock_req.call_args[1] else mock_req.call_args[0][1]
+        assert b"Audio-only" in data
+
+    def test_survives_unreadable_image_file(self, tmp_path: Path) -> None:
+        """OSError reading image file → falls back to text-only, does not raise."""
+        img = tmp_path / "capture.jpg"
+        img.write_bytes(b"data")
+        obs = self._obs_with_image(str(img))
+
+        with patch("urllib.request.urlopen", return_value=self._mock_response()):
+            with patch("pathlib.Path.read_bytes", side_effect=OSError("permission denied")):
+                n = _make_notifier(tmp_path, enable_push=True, push_attach_image=True)
+                n._push(obs)  # should not raise
+
+    def test_png_attachment_uses_correct_mime(self, tmp_path: Path) -> None:
+        """PNG file → Content-Type in multipart body is image/png."""
+        img = tmp_path / "capture.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 50)
+        obs = self._obs_with_image(str(img))
+
+        with patch("urllib.request.urlopen", return_value=self._mock_response()) as mock_open:
+            n = _make_notifier(tmp_path, enable_push=True, push_attach_image=True)
+            n._push(obs)
+
+        req = mock_open.call_args[0][0]
+        assert b"image/png" in req.data
+
+
 # ── _webhook ──────────────────────────────────────────────────────────────────
 
 
 class TestNotifierWebhook:
     def test_webhook_raises_not_implemented(self, tmp_path: Path) -> None:
-        """Phase 5 stub — webhook always raises NotImplementedError."""
+        """Phase 5/6 stub — webhook always raises NotImplementedError."""
         n = _make_notifier(tmp_path, enable_webhook=True)
         with pytest.raises(NotImplementedError):
             n._webhook(_make_observation())
@@ -370,6 +572,28 @@ class TestFromConfig:
     def test_webhook_disabled_by_default(self) -> None:
         n = Notifier.from_config("configs/notify.yaml", "configs/paths.yaml")
         assert n.enable_webhook is False
+
+    def test_loads_push_attach_image_from_yaml(self) -> None:
+        """notify.yaml push.attach_image: true → push_attach_image is True."""
+        n = Notifier.from_config("configs/notify.yaml", "configs/paths.yaml")
+        assert n.push_attach_image is True
+
+    def test_loads_push_max_attachment_bytes_from_yaml(self) -> None:
+        """notify.yaml push.max_attachment_bytes: 2500000 → stored correctly."""
+        n = Notifier.from_config("configs/notify.yaml", "configs/paths.yaml")
+        assert n.push_max_attachment_bytes == 2_500_000
+
+    def test_push_attach_image_can_be_disabled_via_yaml(self, tmp_path: Path) -> None:
+        notify_yaml = tmp_path / "notify.yaml"
+        paths_yaml = tmp_path / "paths.yaml"
+        notify_yaml.write_text(
+            "channels:\n  print: false\n  push: false\n  webhook: false\n  email: false\n"
+            "display:\n  message_template: 'test'\n"
+            "push:\n  attach_image: false\n  max_attachment_bytes: 2500000\n"
+        )
+        paths_yaml.write_text("logs:\n  observations: 'logs/obs.jsonl'\n")
+        n = Notifier.from_config(str(notify_yaml), str(paths_yaml))
+        assert n.push_attach_image is False
 
     def test_loads_webhook_url_from_yaml(self, tmp_path: Path) -> None:
         notify_yaml = tmp_path / "notify.yaml"
