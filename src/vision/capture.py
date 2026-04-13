@@ -14,7 +14,7 @@ Pipeline per cycle:
     picamera2 capture → both cameras simultaneously
         → apply feeder crop (configurable ROI from hardware.yaml)
         → motion gate (background model comparison — skip empty frames)
-        → save raw frames to data/captures/images/ if above threshold
+        → save cropped frame to data/captures/images/ if above threshold
         → preprocess_frame() → (224, 224, 3) float32 normalized arrays
         → return (CaptureResult, CaptureResult | None)
 
@@ -26,19 +26,25 @@ Why crop before classification?
     The crop coordinates are tunable post-mounting via hardware.yaml —
     no code changes needed when repointing the cameras.
 
+Why save the cropped frame rather than the full-resolution frame?
+    The cropped frame (400x400px) is what the classifier actually saw — it is
+    the correct visual record of the detection event and is what gets attached
+    to Pushover notifications (Phase 6). Full-resolution PNG at 1536x864 can
+    exceed the Pushover 2.5MB attachment limit and is not needed for
+    notifications or the observation record.
+
+    The full-resolution raw_frame is preserved in memory on CaptureResult for
+    use by StereoEstimator in Phase 6. When stereo depth estimation is active,
+    StereoEstimator will consume raw_frame directly from the CaptureResult —
+    no full-resolution disk save is required until scripts/calibrate_stereo.py
+    needs to persist calibration frames, which is a Phase 6 task.
+
 Why motion gate?
     At 120fps both cameras produce ~240 frames/second. Most frames contain
     an empty feeder. The motion gate compares each frame to a rolling background
     model (mean of last N frames) and only passes frames where the mean absolute
     pixel difference exceeds motion_threshold. This reduces classifier compute
     to only the moments when something is actually at the feeder.
-
-Phase 6 note:
-    The feeder_crop ROI and the saved raw frames (pre-crop resolution) provide
-    all the geometric information needed for stereo disparity computation.
-    StereoEstimator (src/vision/stereo.py) will consume the raw frames and
-    the detected bounding box to compute depth. The crop coordinates in
-    hardware.yaml define the search region for disparity computation.
 
 Config keys consumed:
     hardware.yaml: cameras.primary_index, cameras.secondary_index,
@@ -78,18 +84,21 @@ class CaptureResult:
         frame:        Preprocessed float32 array (224, 224, 3), ImageNet-normalized.
                       Ready for VisualClassifier.predict().
         raw_frame:    Raw uint8 array at full capture resolution (H, W, 3).
-                      Preserved for stereo depth estimation in Phase 6.
-                      Also saved to disk for the observation record.
+                      Preserved in memory for stereo depth estimation in Phase 6.
+                      StereoEstimator consumes this directly — not read from disk.
         camera_index: Which camera produced this frame (0=primary, 1=secondary).
-        image_path:   Path where raw_frame was saved to disk, or None if not saved.
+        image_path:   Absolute path where the cropped frame was saved to disk,
+                      or None if the save failed. Used for Pushover notifications
+                      and the observation log. Points to the cropped frame
+                      (crop_width × crop_height) not the full-resolution frame.
         motion_score: Mean absolute pixel difference from background model.
                       Used to decide whether to classify this frame.
     """
 
     frame: np.ndarray  # (224, 224, 3) float32 preprocessed
-    raw_frame: np.ndarray  # (H, W, 3) uint8 full resolution
+    raw_frame: np.ndarray  # (H, W, 3) uint8 full resolution — for Phase 6 stereo
     camera_index: int
-    image_path: Path | None
+    image_path: Path | None  # absolute path to saved cropped frame
     motion_score: float
 
 
@@ -141,7 +150,10 @@ class VisionCapture:
             crop_height:            Height of feeder crop ROI in pixels.
             motion_threshold:       Min mean abs pixel diff to accept a frame.
             background_history:     Number of frames to average for background model.
-            output_dir:             Directory where raw frames are saved on detection.
+            output_dir:             Directory where cropped frames are saved on
+                                    detection. Resolved to absolute path at
+                                    construction time so image_path on CaptureResult
+                                    is always absolute regardless of working directory.
         """
         self.primary_index = primary_index
         self.secondary_index = secondary_index
@@ -156,7 +168,10 @@ class VisionCapture:
         self.crop_height = crop_height
         self.motion_threshold = motion_threshold
         self.background_history = background_history
-        self.output_dir = Path(output_dir)
+        # resolve() makes the path absolute relative to cwd at construction time.
+        # The agent is always launched from the project root, so this guarantees
+        # image_path on CaptureResult is absolute and portable across modules.
+        self.output_dir = Path(output_dir).resolve()
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -249,8 +264,6 @@ class VisionCapture:
             self.secondary_index,
         )
 
-        # Picamera2 handles two cameras via separate instances
-        # One instance per physical camera — confirmed working on Pi
         self._picam0 = Picamera2(self.primary_index)
         self._picam1 = Picamera2(self.secondary_index)
 
@@ -286,7 +299,6 @@ class VisionCapture:
         if self._picam is None and not hasattr(self, "_picam0"):
             self._open_cameras()
 
-        # ── Capture raw frames ────────────────────────────────────────────────
         try:
             raw0 = self._picam0.capture_array("main")  # (H, W, 3) uint8 RGB
             raw1 = self._picam1.capture_array("main")  # (H, W, 3) uint8 RGB
@@ -294,7 +306,6 @@ class VisionCapture:
             logger.exception("Camera capture failed: %s", exc)
             return None, None
 
-        # ── Process each camera ───────────────────────────────────────────────
         result0 = self._process_frame(raw0, camera_index=self.primary_index)
         result1 = self._process_frame(raw1, camera_index=self.secondary_index)
 
@@ -308,6 +319,10 @@ class VisionCapture:
         """
         Apply crop, motion gate, save, and preprocess a single raw frame.
 
+        The cropped frame is saved to disk for notifications and the observation
+        log. The full-resolution raw_frame is preserved on CaptureResult in
+        memory for Phase 6 stereo estimation.
+
         Args:
             raw_frame:    Full resolution (H, W, 3) uint8 RGB from picamera2.
             camera_index: Which camera this frame came from.
@@ -316,8 +331,6 @@ class VisionCapture:
             CaptureResult if frame passes motion gate, else None.
         """
         # ── Apply feeder crop ─────────────────────────────────────────────────
-        # Crop to the configured ROI before any other processing.
-        # This constrains motion detection and classification to the perch zone.
         cropped = raw_frame[
             self.crop_y : self.crop_y + self.crop_height,
             self.crop_x : self.crop_x + self.crop_width,
@@ -325,8 +338,6 @@ class VisionCapture:
 
         # ── Motion gate ───────────────────────────────────────────────────────
         motion_score, bg = self._compute_motion(cropped, camera_index)
-
-        # Update background model regardless of motion gate result
         self._update_background(cropped, camera_index, bg)
 
         if motion_score < self.motion_threshold:
@@ -345,12 +356,13 @@ class VisionCapture:
             self.motion_threshold,
         )
 
-        # ── Save raw frame ────────────────────────────────────────────────────
-        image_path = self._save_frame(raw_frame, camera_index)
+        # ── Save cropped frame ────────────────────────────────────────────────
+        # Save the cropped frame — this is what the classifier saw and what
+        # gets attached to Pushover notifications. Full-resolution raw_frame
+        # stays in memory on CaptureResult for Phase 6 stereo estimation.
+        image_path = self._save_frame(cropped, camera_index)
 
         # ── Preprocess for classification ─────────────────────────────────────
-        # preprocess_frame handles resize from crop_width×crop_height → 224×224
-        # and applies ImageNet normalization
         preprocessed = preprocess_frame(
             cropped,
             width=self.classification_width,
@@ -359,7 +371,7 @@ class VisionCapture:
 
         return CaptureResult(
             frame=preprocessed,
-            raw_frame=raw_frame,  # full resolution preserved for Phase 6 stereo
+            raw_frame=raw_frame,  # full resolution preserved in memory for Phase 6
             camera_index=camera_index,
             image_path=image_path,
             motion_score=motion_score,
@@ -383,13 +395,12 @@ class VisionCapture:
 
         Returns:
             Tuple of (motion_score, current_background).
-            motion_score: float, mean abs diff in [0, 255] normalized to [0, 1].
-            current_background: current background model array, or None if not built.
+            motion_score is mean abs diff normalized to [0, 1].
+            current_background is the current model array, or None if not built.
         """
         bg = self._bg_primary if camera_index == self.primary_index else self._bg_secondary
 
         if bg is None or self._bg_count < self.background_history:
-            # Not enough frames to build background model yet — always pass through
             return self.motion_threshold + 1.0, bg
 
         frame_float = frame.astype(np.float32) / 255.0
@@ -407,13 +418,12 @@ class VisionCapture:
         Update the rolling background model with the current frame.
 
         Uses exponential moving average: bg = alpha * frame + (1 - alpha) * bg
-        where alpha = 1 / background_history. This gives recent frames slightly
-        more weight while smoothing out fast transient changes (birds, leaves).
+        where alpha = 1 / background_history.
 
         Args:
-            frame:       Current cropped frame (uint8).
+            frame:        Current cropped frame (uint8).
             camera_index: Which camera's model to update.
-            current_bg:  Current background model, or None if not yet initialized.
+            current_bg:   Current background model, or None if not yet initialized.
         """
         frame_float = frame.astype(np.float32) / 255.0
         alpha = 1.0 / self.background_history
@@ -430,19 +440,25 @@ class VisionCapture:
 
         self._bg_count += 1
 
-    def _save_frame(self, raw_frame: np.ndarray, camera_index: int) -> Path | None:
+    def _save_frame(self, cropped_frame: np.ndarray, camera_index: int) -> Path | None:
         """
-        Save a full-resolution raw frame to disk as a PNG.
+        Save a cropped frame to disk as a PNG.
+
+        Saves the post-crop frame (crop_width × crop_height) rather than the
+        full-resolution capture. This keeps file sizes small (typically 50-200KB
+        vs 1-3MB for full resolution), stays well within Pushover's 2.5MB
+        attachment limit, and represents exactly what the classifier saw.
 
         Uses PIL for PNG encoding — no OpenCV dependency required.
-        Saved at full capture resolution (1536x864) for stereo depth use in Phase 6.
+        output_dir is absolute (resolved in __init__) so the returned path
+        is always absolute regardless of working directory.
 
         Args:
-            raw_frame:    Full resolution (H, W, 3) uint8 RGB frame.
-            camera_index: Used in filename to distinguish cameras.
+            cropped_frame: Cropped (crop_height × crop_width, 3) uint8 RGB frame.
+            camera_index:  Used in filename to distinguish cameras.
 
         Returns:
-            Path to the saved file, or None if save fails (non-fatal).
+            Absolute Path to the saved file, or None if save fails (non-fatal).
         """
         try:
             from PIL import Image  # type: ignore[import]
@@ -451,8 +467,8 @@ class VisionCapture:
             filename = f"{ts}_cam{camera_index}.png"
             path = self.output_dir / filename
 
-            Image.fromarray(raw_frame).save(path)
-            logger.debug("Saved frame → %s", filename)
+            Image.fromarray(cropped_frame).save(path)
+            logger.debug("Saved cropped frame → %s", filename)
             return path
 
         except Exception as exc:
