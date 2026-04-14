@@ -37,7 +37,7 @@ models/**/*.pth
 models/**/*.pkl
 models/*.tflite
 models/*.hef
-models/*.onnx
+*.onnx
 # Keep model cards and label_map.json committed:
 !models/label_map.json
 !models/**/*.md
