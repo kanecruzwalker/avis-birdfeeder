@@ -10,6 +10,47 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+### Phase 6 — Hailo HAILO8L hardware inference benchmark
+
+#### Hailo EfficientNet-B0 compilation and deployment (this PR)
+- `src/vision/hailo_extractor.py` — `HailoVisualExtractor` class wrapping
+  HailoRT InferModel API. Accepts (224, 224, 3) uint8 frames, returns
+  (1, 1280) float32 features for the existing sklearn LogReg head. Requires
+  `HailoSchedulingAlgorithm.ROUND_ROBIN` for correct output from HailoRT 4.23.0.
+  Falls back gracefully when `hailo_platform` unavailable (laptop/CI).
+- `configs/hardware.yaml` — updated `hailo.models.visual_hef` to point to
+  compiled `models/visual/efficientnet_b0_avis_v2.hef`.
+- `scripts/benchmark_hailo.py` — reproducible latency benchmark: CPU 82.60ms,
+  Hailo ResNet-50 raw 0.25ms (332×), Hailo EfficientNet-B0 13.04ms (6.3×).
+- `scripts/compile_hailo_hef.py` — documents full compilation pipeline:
+  ONNX export, calibration data export, DFC Docker steps, SE block avgpool
+  shift delta fix, and Pi deployment instructions.
+- `notebooks/hailo_benchmark.ipynb` — three-part benchmark narrative with
+  live Pi results. Charts saved to `notebooks/results/`.
+- `notebooks/results/experiments.csv` — 3 new Phase 6 rows appended.
+
+#### Key technical findings
+- EfficientNet-B0 compiled to HEF via Hailo DFC 3.32.0 in Docker (WSL2).
+- HEF compiled for HailoRT 4.22.0 loads and runs correctly on 4.23.0
+  (forward compatibility confirmed).
+- SE block avgpool shift delta error resolved with model script:
+  `pre_quantization_optimization(global_avgpool_reduction, division_factors=[7,7])`
+- `ROUND_ROBIN` scheduling required — without it, HailoRT 4.23.0 returns
+  `HAILO_STREAM_NOT_ACTIVATED(72)` and fills output buffer with zeros.
+
+#### Tests
+- `tests/vision/test_hailo_extractor.py` — 15 unit tests (mocked for CI),
+  3 hardware integration tests marked `@pytest.mark.hardware`.
+
+#### Hardware validation
+- Benchmark confirmed on Pi (HAILO8L firmware 4.23.0):
+  CPU baseline 82.60ms, Hailo EfficientNet-B0 13.04ms = 6.3× speedup.
+
+### Test count
+- 408 passing, 0 failing, CI green
+
+---
+
 ### Phase 6 — Notification polish
 
 #### Push image attachment (PR #36)
