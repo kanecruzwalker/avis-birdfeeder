@@ -110,7 +110,7 @@ hailo:
   # These files do not exist until Hailo compilation is run in Phase 5.
   # Classifiers check for .hef existence and fall back to CPU if absent.
   models:
-    visual_hef: "models/hailo/visual_efficientnet.hef"
+    visual_hef: "models/hailo/efficientnet_b0_avis_v2.hef"
     audio_hef:  "models/hailo/audio_birdnet.hef"
  
   # Whether to attempt Hailo inference when .hef files are present.
