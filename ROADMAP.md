@@ -150,8 +150,11 @@ evaluated against baselines. All training on laptop/Colab.
 
 ### Model compilation (deferred to Phase 6)
 - [ ] Export audio model to ONNX → compile to Hailo .hef
-- [ ] Export visual model to ONNX → compile to Hailo .hef
-- [ ] Verify inference speed meets real-time requirements
+- [x] Export visual model to ONNX → compile to Hailo .hef
+- [x] Verify inference speed meets real-time requirements
+- [x] Hailo HAILO8L benchmark — EfficientNet-B0 HEF compiled and validated
+- [x] `notebooks/hailo_benchmark.ipynb` — benchmark results with live Pi data
+- [x] `src/vision/hailo_extractor.py` — HailoVisualExtractor class
 ---
 
 ## ⏳ Phase 6 — Evaluation + Report
