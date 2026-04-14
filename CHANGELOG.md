@@ -10,6 +10,52 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+### Phase 6 — Notification polish
+
+#### Push image attachment (PR #36)
+- `src/notify/notifier.py` — `_push()` now sends captured frame as multipart
+  attachment when `push.attach_image` is true in `notify.yaml` and a valid
+  image file is available on the observation. Selects best available frame
+  (`image_path` then `image_path_2` fallback). Falls back to text-only
+  silently if file is missing, too large, or unreadable. Audio-only
+  detections include a note in the message body.
+- `src/notify/notifier.py` — Add `_build_multipart()` module-level helper
+  for multipart/form-data encoding. No external dependencies — uses stdlib
+  `uuid`, `io`, `mimetypes` only.
+- `src/notify/notifier.py` — Extend `__init__` with `push_attach_image`
+  and `push_max_attachment_bytes` parameters. `from_config()` reads new
+  `push:` block from `notify.yaml`.
+- `configs/notify.yaml` — Add `push:` config block with `attach_image: true`
+  and `max_attachment_bytes: 2500000`. Mirrors existing `webhook:` block.
+
+#### Vision capture fix (PR #36)
+- `src/vision/capture.py` — `_save_frame()` now saves the cropped frame
+  (400×400px, 50–200KB) instead of the full-resolution frame (1536×864px,
+  1–3MB). Keeps attachments well within Pushover's 2.5MB limit and
+  represents exactly what the classifier saw.
+- `src/vision/capture.py` — `output_dir` resolved to absolute path at
+  construction time via `Path.resolve()`. `image_path` on every
+  `CaptureResult` is now always absolute regardless of working directory.
+  `raw_frame` preserved in memory for Phase 6 stereo estimation.
+
+#### Tests
+- `tests/notify/test_notifier.py` — Add `TestBuildMultipart` (8 tests) and
+  `TestNotifierPushAttachment` (8 tests). Update `_make_notifier()` helper
+  with `push_attach_image=False` default. Add 3 new `TestFromConfig` tests.
+- `tests/vision/test_capture.py` — New file, 42 tests covering `__init__`,
+  `from_config`, `_save_frame`, `_compute_motion`, `_update_background`,
+  `_process_frame`, and `CaptureResult`. Zero hardware dependencies.
+
+#### Hardware validation
+- Pushover notifications confirmed delivered with attached cropped frame
+  on Pi deployment. Three species detected during validation session:
+  White-breasted Nuthatch (74%, 79%), Black Phoebe (99%).
+
+### Test count
+- 396 passing, 0 failing, CI green
+
+---
+
 ### Changed
 - `notebooks/results/phase5/` - moved phase5 result images into dedicated subfolder
 
