@@ -78,6 +78,18 @@ except ImportError:
     VDevice = None  # type: ignore[assignment,misc]
 
 
+def _resize_frame(frame: np.ndarray, size: int) -> np.ndarray:
+    """Resize frame to size×size. Uses cv2 if available, falls back to PIL."""
+    try:
+        import cv2  # noqa: PLC0415
+
+        return cv2.resize(frame, (size, size))
+    except ImportError:
+        from PIL import Image  # noqa: PLC0415
+
+        return np.array(Image.fromarray(frame).resize((size, size)))
+
+
 @dataclass
 class Detection:
     """
@@ -311,12 +323,10 @@ class HailoDetector:
         orig_h, orig_w = frame.shape[:2]
 
         # ── Preprocess: resize to 640×640 uint8 ──────────────────────────────
-        import cv2  # noqa: PLC0415 — Pi-only, not available in CI
-
-        frame_640 = cv2.resize(frame, (YOLO_INPUT_SIZE, YOLO_INPUT_SIZE))
+        frame_640 = _resize_frame(frame, YOLO_INPUT_SIZE)
 
         # ── Preprocess: resize to 640×640 uint8 ──────────────────────────────
-        frame_640 = cv2.resize(frame, (YOLO_INPUT_SIZE, YOLO_INPUT_SIZE))
+        frame_640 = _resize_frame(frame, YOLO_INPUT_SIZE)
         if frame_640.dtype != np.uint8:
             frame_640 = (frame_640 * 255).clip(0, 255).astype(np.uint8)
 
@@ -366,9 +376,7 @@ class HailoDetector:
             raise RuntimeError("HailoDetector.open() must be called before detect_all().")
 
         orig_h, orig_w = frame.shape[:2]
-        import cv2  # noqa: PLC0415 — Pi-only, not available in CI
-
-        frame_640 = cv2.resize(frame, (YOLO_INPUT_SIZE, YOLO_INPUT_SIZE))
+        frame_640 = _resize_frame(frame, YOLO_INPUT_SIZE)
         if frame_640.dtype != np.uint8:
             frame_640 = (frame_640 * 255).clip(0, 255).astype(np.uint8)
 
