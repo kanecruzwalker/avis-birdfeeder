@@ -112,8 +112,21 @@ hailo:
   models:
     visual_hef: "models/visual/efficientnet_b0_avis_v2.hef"
     audio_hef:  "models/visual/audio_birdnet.hef"
+    yolo_hef:   "/usr/share/hailo-models/yolov8s_h8l.hef"
+
  
   # Whether to attempt Hailo inference when .hef files are present.
   # Set false to force CPU inference regardless of .hef availability.
   # Useful for debugging classification accuracy independently of Hailo.
   enabled: false
+
+  detection_mode: "fixed_crop" # "fixed_crop" or "yolo" - set "yolo" locally on Pi
+
+
+
+
+# ── YOLO detection ─────────────────────────────────────────────────────────
+  yolo:
+    score_threshold: 0.25
+    max_proposals: 10
+    min_bird_confidence: 0.25
