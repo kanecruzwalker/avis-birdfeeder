@@ -44,6 +44,3 @@ python-dotenv==1.0.1       # Load .env file into os.environ
 # ── Hailo inference (Pi only — install separately, see docs/SETUP.md) ─────────
 # hailort                   # Installed via Hailo's own installer, not pip
 
-
-# Phase 6 — YOLO detection pipeline
-opencv-python-headless==4.13.0.92  # frame resizing for Hailo YOLO input preprocessing
