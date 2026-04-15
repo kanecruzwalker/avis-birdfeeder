@@ -51,7 +51,6 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-import cv2
 import numpy as np
 import yaml
 
@@ -312,6 +311,10 @@ class HailoDetector:
         orig_h, orig_w = frame.shape[:2]
 
         # ── Preprocess: resize to 640×640 uint8 ──────────────────────────────
+        import cv2  # noqa: PLC0415 — Pi-only, not available in CI
+        frame_640 = cv2.resize(frame, (YOLO_INPUT_SIZE, YOLO_INPUT_SIZE))
+
+        # ── Preprocess: resize to 640×640 uint8 ──────────────────────────────
         frame_640 = cv2.resize(frame, (YOLO_INPUT_SIZE, YOLO_INPUT_SIZE))
         if frame_640.dtype != np.uint8:
             frame_640 = (frame_640 * 255).clip(0, 255).astype(np.uint8)
@@ -362,6 +365,7 @@ class HailoDetector:
             raise RuntimeError("HailoDetector.open() must be called before detect_all().")
 
         orig_h, orig_w = frame.shape[:2]
+        import cv2  # noqa: PLC0415 — Pi-only, not available in CI
         frame_640 = cv2.resize(frame, (YOLO_INPUT_SIZE, YOLO_INPUT_SIZE))
         if frame_640.dtype != np.uint8:
             frame_640 = (frame_640 * 255).clip(0, 255).astype(np.uint8)
