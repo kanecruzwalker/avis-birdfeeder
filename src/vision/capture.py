@@ -10,7 +10,7 @@ Hardware:
     Mode:                 1536x864 @ 120fps (highest framerate available)
     Simultaneous capture: confirmed via picamera2 on deployed Pi
 
-Pipeline per cycle:
+Pipeline per cycle (fixed_crop mode):
     picamera2 capture → both cameras simultaneously
         → apply feeder crop (configurable ROI from hardware.yaml)
         → motion gate (background model comparison — skip empty frames)
@@ -18,46 +18,36 @@ Pipeline per cycle:
         → preprocess_frame() → (224, 224, 3) float32 normalized arrays
         → return (CaptureResult, CaptureResult | None)
 
+Pipeline per cycle (yolo mode):
+    picamera2 capture → both cameras simultaneously
+        → motion gate on fixed crop (background model — skip empty frames)
+        → if motion: run YOLOv8s on full frame to find bird bounding box
+        → if bird detected: crop to bounding box (+ padding)
+        → if no bird: fall back to fixed crop
+        → save crop, preprocess, return CaptureResult
+
+Why two detection modes?
+    fixed_crop assumes the bird is always in a specific pixel region.
+    yolo finds wherever the bird actually is, handles mounting variation,
+    and enables per-bird crops that represent exactly what the classifier
+    should see. The ExperimentOrchestrator can switch between modes on a
+    timer to A/B compare classification accuracy across modes.
+
 Why crop before classification?
     The full 1536x864 frame includes background sky, branches, and surroundings.
-    Cropping to the feeder perch zone (400x400px configured in hardware.yaml)
-    before downsampling to 224x224 focuses EfficientNet on the bird rather
-    than background, reducing false classifications from background clutter.
-    The crop coordinates are tunable post-mounting via hardware.yaml —
-    no code changes needed when repointing the cameras.
+    Cropping before downsampling to 224x224 focuses EfficientNet on the bird
+    rather than background, reducing false classifications from background clutter.
 
 Why save the cropped frame rather than the full-resolution frame?
-    The cropped frame (400x400px) is what the classifier actually saw — it is
-    the correct visual record of the detection event and is what gets attached
-    to Pushover notifications (Phase 6). Full-resolution PNG at 1536x864 can
-    exceed the Pushover 2.5MB attachment limit and is not needed for
-    notifications or the observation record.
-
-    The full-resolution raw_frame is preserved in memory on CaptureResult for
-    use by StereoEstimator in Phase 6. When stereo depth estimation is active,
-    StereoEstimator will consume raw_frame directly from the CaptureResult —
-    no full-resolution disk save is required until scripts/calibrate_stereo.py
-    needs to persist calibration frames, which is a Phase 6 task.
-
-Why motion gate?
-    At 120fps both cameras produce ~240 frames/second. Most frames contain
-    an empty feeder. The motion gate compares each frame to a rolling background
-    model (mean of last N frames) and only passes frames where the mean absolute
-    pixel difference exceeds motion_threshold. This reduces classifier compute
-    to only the moments when something is actually at the feeder.
+    The cropped frame is what the classifier actually saw — it is the correct
+    visual record of the detection event and what gets attached to Pushover
+    notifications (Phase 6). Full-resolution PNG can exceed Pushover's 2.5MB
+    attachment limit and is not needed for notifications or the observation record.
 
 Config keys consumed:
-    hardware.yaml: cameras.primary_index, cameras.secondary_index,
-                   cameras.capture_width, cameras.capture_height,
-                   cameras.capture_fps, cameras.classification_width,
-                   cameras.classification_height, cameras.feeder_crop,
-                   cameras.motion_threshold, cameras.background_history
+    hardware.yaml: cameras.*, hailo.detection_mode, hailo.models.yolo_hef,
+                   hailo.yolo.*
     paths.yaml:    captures.images
-
-Dependencies:
-    picamera2   — Pi Camera Module 3 capture (Pi only)
-    numpy       — array operations and background model
-    src.vision.preprocess — frame normalization for EfficientNet
 """
 
 from __future__ import annotations
@@ -74,6 +64,10 @@ from src.vision.preprocess import preprocess_frame
 
 logger = logging.getLogger(__name__)
 
+# Detection mode constants
+DETECTION_MODE_FIXED_CROP = "fixed_crop"
+DETECTION_MODE_YOLO = "yolo"
+
 
 @dataclass
 class CaptureResult:
@@ -81,41 +75,43 @@ class CaptureResult:
     Output of a single camera capture, post-crop and post-preprocess.
 
     Attributes:
-        frame:        Preprocessed float32 array (224, 224, 3), ImageNet-normalized.
-                      Ready for VisualClassifier.predict().
-        raw_frame:    Raw uint8 array at full capture resolution (H, W, 3).
-                      Preserved in memory for stereo depth estimation in Phase 6.
-                      StereoEstimator consumes this directly — not read from disk.
-        camera_index: Which camera produced this frame (0=primary, 1=secondary).
-        image_path:   Absolute path where the cropped frame was saved to disk,
-                      or None if the save failed. Used for Pushover notifications
-                      and the observation log. Points to the cropped frame
-                      (crop_width × crop_height) not the full-resolution frame.
-        motion_score: Mean absolute pixel difference from background model.
-                      Used to decide whether to classify this frame.
+        frame:          Preprocessed float32 array (224, 224, 3), ImageNet-normalized.
+                        Ready for VisualClassifier.predict().
+        raw_frame:      Raw uint8 array at full capture resolution (H, W, 3).
+                        Preserved in memory for stereo depth estimation in Phase 6.
+        camera_index:   Which camera produced this frame (0=primary, 1=secondary).
+        image_path:     Absolute path where the cropped frame was saved to disk,
+                        or None if the save failed.
+        motion_score:   Mean absolute pixel difference from background model.
+        detection_mode: Which detection mode produced this crop ("fixed_crop"|"yolo").
+        detection_box:  (x1, y1, x2, y2) bounding box in original frame coordinates
+                        if YOLO detected a bird, else None.
     """
 
     frame: np.ndarray  # (224, 224, 3) float32 preprocessed
-    raw_frame: np.ndarray  # (H, W, 3) uint8 full resolution — for Phase 6 stereo
+    raw_frame: np.ndarray  # (H, W, 3) uint8 full resolution
     camera_index: int
-    image_path: Path | None  # absolute path to saved cropped frame
+    image_path: Path | None
     motion_score: float
+    detection_mode: str = DETECTION_MODE_FIXED_CROP
+    detection_box: tuple[int, int, int, int] | None = None
 
 
 class VisionCapture:
     """
     Captures frames from both Pi Camera Module 3 sensors simultaneously.
 
-    Each call to capture_frames() returns preprocessed results from both
-    cameras, filtering out frames below the motion threshold.
+    Supports two detection modes controlled by hardware.yaml:
+        fixed_crop: Apply a fixed ROI crop before classification (Phase 5 default).
+        yolo:       Run YOLOv8s on the full frame to find bird bounding boxes,
+                    then crop to the detected region (Phase 6 detect-then-classify).
 
     Usage:
         capture = VisionCapture.from_config("configs/")
         primary, secondary = capture.capture_frames()
         if primary is not None:
             result_0 = classifier.predict(primary.frame, camera_index=0)
-        if secondary is not None:
-            result_1 = classifier.predict(secondary.frame, camera_index=1)
+        capture.stop()
     """
 
     def __init__(
@@ -134,6 +130,12 @@ class VisionCapture:
         motion_threshold: float,
         background_history: int,
         output_dir: str | Path,
+        detection_mode: str = DETECTION_MODE_FIXED_CROP,
+        hailo_yolo_hef: str | None = None,
+        yolo_score_threshold: float = 0.25,
+        yolo_max_proposals: int = 10,
+        yolo_min_bird_confidence: float = 0.25,
+        yolo_crop_padding: int = 20,
     ) -> None:
         """
         Args:
@@ -150,10 +152,15 @@ class VisionCapture:
             crop_height:            Height of feeder crop ROI in pixels.
             motion_threshold:       Min mean abs pixel diff to accept a frame.
             background_history:     Number of frames to average for background model.
-            output_dir:             Directory where cropped frames are saved on
-                                    detection. Resolved to absolute path at
-                                    construction time so image_path on CaptureResult
-                                    is always absolute regardless of working directory.
+            output_dir:             Directory where cropped frames are saved.
+            detection_mode:         "fixed_crop" or "yolo". Controlled by
+                                    hardware.yaml hailo.detection_mode.
+            hailo_yolo_hef:         Path to yolov8s_h8l.hef. Only used when
+                                    detection_mode is "yolo".
+            yolo_score_threshold:   YOLO NMS score threshold.
+            yolo_max_proposals:     Max YOLO detections per class per frame.
+            yolo_min_bird_confidence: Min confidence to accept a bird detection.
+            yolo_crop_padding:      Pixels to add around YOLO bounding box.
         """
         self.primary_index = primary_index
         self.secondary_index = secondary_index
@@ -168,25 +175,32 @@ class VisionCapture:
         self.crop_height = crop_height
         self.motion_threshold = motion_threshold
         self.background_history = background_history
-        # resolve() makes the path absolute relative to cwd at construction time.
-        # The agent is always launched from the project root, so this guarantees
-        # image_path on CaptureResult is absolute and portable across modules.
         self.output_dir = Path(output_dir).resolve()
+        self.detection_mode = detection_mode
+        self.hailo_yolo_hef = hailo_yolo_hef
+        self.yolo_score_threshold = yolo_score_threshold
+        self.yolo_max_proposals = yolo_max_proposals
+        self.yolo_min_bird_confidence = yolo_min_bird_confidence
+        self.yolo_crop_padding = yolo_crop_padding
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Rolling background models — one per camera, shape (H, W, 3) float32
-        # Initialized on first capture, updated each cycle
+        # Rolling background models — one per camera
         self._bg_primary: np.ndarray | None = None
         self._bg_secondary: np.ndarray | None = None
         self._bg_count: int = 0
 
-        # picamera2 instance — lazy loaded on first capture_frames() call
-        self._picam = None
+        # picamera2 instances — lazy loaded on first capture_frames()
+        self._picam0 = None
+        self._picam1 = None
+
+        # HailoDetector — lazy loaded on first YOLO detection
+        self._detector = None
+        self._detector_open = False
 
         logger.info(
             "VisionCapture initialized | cameras=[%d, %d] resolution=%dx%d "
-            "crop=(%d,%d,%dx%d) motion_threshold=%.3f output=%s",
+            "crop=(%d,%d,%dx%d) motion_threshold=%.3f output=%s mode=%s",
             primary_index,
             secondary_index,
             capture_width,
@@ -197,6 +211,7 @@ class VisionCapture:
             crop_height,
             motion_threshold,
             self.output_dir,
+            detection_mode,
         )
 
     @classmethod
@@ -205,6 +220,11 @@ class VisionCapture:
         Construct a VisionCapture from the configs/ directory.
 
         Reads hardware.yaml and paths.yaml.
+
+        Hailo YOLO config is read from hardware.yaml:
+            hailo.detection_mode    → detection_mode ("fixed_crop" or "yolo")
+            hailo.models.yolo_hef   → hailo_yolo_hef
+            hailo.yolo.*            → yolo thresholds
 
         Args:
             config_dir: Path to the configs/ directory.
@@ -222,6 +242,12 @@ class VisionCapture:
         cam = hw["cameras"]
         crop = cam["feeder_crop"]
 
+        # Read Hailo YOLO config
+        hailo_cfg = hw.get("hailo", {})
+        detection_mode = hailo_cfg.get("detection_mode", DETECTION_MODE_FIXED_CROP)
+        hailo_yolo_hef = hailo_cfg.get("models", {}).get("yolo_hef")
+        yolo_cfg = hailo_cfg.get("yolo", {})
+
         return cls(
             primary_index=cam["primary_index"],
             secondary_index=cam["secondary_index"],
@@ -237,25 +263,25 @@ class VisionCapture:
             motion_threshold=cam["motion_threshold"],
             background_history=cam["background_history"],
             output_dir=paths["captures"]["images"],
+            detection_mode=detection_mode,
+            hailo_yolo_hef=hailo_yolo_hef,
+            yolo_score_threshold=yolo_cfg.get("score_threshold", 0.25),
+            yolo_max_proposals=yolo_cfg.get("max_proposals", 10),
+            yolo_min_bird_confidence=yolo_cfg.get("min_bird_confidence", 0.25),
         )
 
     def _open_cameras(self) -> None:
         """
         Open both cameras via picamera2 for simultaneous capture.
 
-        Called lazily on first capture_frames(). Separated from __init__ so
-        that constructing VisionCapture in tests does not require Pi hardware.
-
-        Raises:
-            RuntimeError: If picamera2 is not installed or cameras are not detected.
+        Called lazily on first capture_frames().
         """
         try:
             from picamera2 import Picamera2  # type: ignore[import]
         except ImportError as exc:
             raise RuntimeError(
                 "picamera2 is not installed or not available. "
-                "VisionCapture requires a Raspberry Pi with picamera2. "
-                "On laptop, mock VisionCapture.capture_frames() in tests."
+                "VisionCapture requires a Raspberry Pi with picamera2."
             ) from exc
 
         logger.info(
@@ -281,27 +307,54 @@ class VisionCapture:
 
         logger.info("Both cameras opened and started.")
 
+    def _load_detector(self) -> bool:
+        """
+        Lazily load HailoDetector for YOLO mode.
+
+        Returns True if detector is ready, False if unavailable.
+        Falls back silently — caller continues with fixed_crop.
+        """
+        if self._detector_open:
+            return True
+        if not self.hailo_yolo_hef:
+            logger.warning("YOLO mode requested but no yolo_hef path configured.")
+            return False
+        try:
+            from src.vision.hailo_detector import HailoDetector
+
+            self._detector = HailoDetector(
+                hef_path=self.hailo_yolo_hef,
+                score_threshold=self.yolo_score_threshold,
+                max_proposals_per_class=self.yolo_max_proposals,
+                min_bird_confidence=self.yolo_min_bird_confidence,
+            )
+            self._detector.open()
+            self._detector_open = True
+            logger.info(
+                "HailoDetector opened for YOLO detection | hef=%s",
+                self.hailo_yolo_hef,
+            )
+            return True
+        except Exception as exc:
+            logger.warning("HailoDetector failed to load (%s) — falling back to fixed_crop.", exc)
+            self._detector = None
+            return False
+
     def capture_frames(self) -> tuple[CaptureResult | None, CaptureResult | None]:
         """
         Capture one frame from each camera simultaneously and apply motion gate.
 
-        Both cameras are captured in sequence (picamera2 does not support
-        true hardware-synchronized simultaneous capture on Pi 5 via CSI —
-        frames are within ~8ms of each other at 120fps, sufficient for
-        classification and stereo estimation at feeder distances).
-
         Returns:
             Tuple of (primary_result, secondary_result).
             Either element is None if the camera's frame was below the
-            motion threshold — caller should skip classification for that camera.
-            Both None means the feeder is empty this cycle.
+            motion threshold. Both None means the feeder is empty this cycle.
         """
-        if self._picam is None and not hasattr(self, "_picam0"):
+        if self._picam0 is None:
             self._open_cameras()
 
         try:
-            raw0 = self._picam0.capture_array("main")  # (H, W, 3) uint8 RGB
-            raw1 = self._picam1.capture_array("main")  # (H, W, 3) uint8 RGB
+            raw0 = self._picam0.capture_array("main")
+            raw1 = self._picam1.capture_array("main")
         except Exception as exc:
             logger.exception("Camera capture failed: %s", exc)
             return None, None
@@ -317,11 +370,15 @@ class VisionCapture:
         camera_index: int,
     ) -> CaptureResult | None:
         """
-        Apply crop, motion gate, save, and preprocess a single raw frame.
+        Apply motion gate, crop (fixed or YOLO), save, and preprocess a frame.
 
-        The cropped frame is saved to disk for notifications and the observation
-        log. The full-resolution raw_frame is preserved on CaptureResult in
-        memory for Phase 6 stereo estimation.
+        In fixed_crop mode:
+            Apply feeder_crop ROI → motion gate → save → preprocess.
+
+        In yolo mode:
+            Apply feeder_crop for motion gate only → if motion detected,
+            run YOLO on full frame → use detected bird box as crop region
+            (falls back to fixed_crop if no bird detected by YOLO).
 
         Args:
             raw_frame:    Full resolution (H, W, 3) uint8 RGB from picamera2.
@@ -330,15 +387,17 @@ class VisionCapture:
         Returns:
             CaptureResult if frame passes motion gate, else None.
         """
-        # ── Apply feeder crop ─────────────────────────────────────────────────
-        cropped = raw_frame[
+        # ── Apply feeder crop for motion gate ─────────────────────────────────
+        # Always use the fixed crop for motion detection — it's fast and
+        # the background model is calibrated to this region.
+        fixed_crop = raw_frame[
             self.crop_y : self.crop_y + self.crop_height,
             self.crop_x : self.crop_x + self.crop_width,
         ]
 
         # ── Motion gate ───────────────────────────────────────────────────────
-        motion_score, bg = self._compute_motion(cropped, camera_index)
-        self._update_background(cropped, camera_index, bg)
+        motion_score, bg = self._compute_motion(fixed_crop, camera_index)
+        self._update_background(fixed_crop, camera_index, bg)
 
         if motion_score < self.motion_threshold:
             logger.debug(
@@ -356,25 +415,66 @@ class VisionCapture:
             self.motion_threshold,
         )
 
-        # ── Save cropped frame ────────────────────────────────────────────────
-        # Save the cropped frame — this is what the classifier saw and what
-        # gets attached to Pushover notifications. Full-resolution raw_frame
-        # stays in memory on CaptureResult for Phase 6 stereo estimation.
-        image_path = self._save_frame(cropped, camera_index)
+        # ── Crop selection — fixed_crop or YOLO ───────────────────────────────
+        crop_to_classify = fixed_crop
+        detection_mode = DETECTION_MODE_FIXED_CROP
+        detection_box = None
+
+        if self.detection_mode == DETECTION_MODE_YOLO:
+            yolo_ready = self._load_detector()
+            if yolo_ready and self._detector is not None:
+                try:
+                    detection = self._detector.detect(raw_frame)
+                    if detection is not None:
+                        crop_to_classify = detection.as_crop(
+                            raw_frame, padding=self.yolo_crop_padding
+                        )
+                        detection_mode = DETECTION_MODE_YOLO
+                        detection_box = (
+                            detection.x1,
+                            detection.y1,
+                            detection.x2,
+                            detection.y2,
+                        )
+                        logger.debug(
+                            "Camera %d: YOLO bird detected conf=%.3f " "box=(%d,%d,%d,%d)",
+                            camera_index,
+                            detection.confidence,
+                            detection.x1,
+                            detection.y1,
+                            detection.x2,
+                            detection.y2,
+                        )
+                    else:
+                        logger.debug(
+                            "Camera %d: YOLO no bird — falling back to fixed_crop.",
+                            camera_index,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "Camera %d: YOLO detection failed (%s) — " "falling back to fixed_crop.",
+                        camera_index,
+                        exc,
+                    )
+
+        # ── Save crop ─────────────────────────────────────────────────────────
+        image_path = self._save_frame(crop_to_classify, camera_index)
 
         # ── Preprocess for classification ─────────────────────────────────────
         preprocessed = preprocess_frame(
-            cropped,
+            crop_to_classify,
             width=self.classification_width,
             height=self.classification_height,
         )
 
         return CaptureResult(
             frame=preprocessed,
-            raw_frame=raw_frame,  # full resolution preserved in memory for Phase 6
+            raw_frame=raw_frame,
             camera_index=camera_index,
             image_path=image_path,
             motion_score=motion_score,
+            detection_mode=detection_mode,
+            detection_box=detection_box,
         )
 
     def _compute_motion(
@@ -386,17 +486,7 @@ class VisionCapture:
         Compute mean absolute pixel difference from the background model.
 
         On the first background_history frames we return motion_threshold + 1
-        so that initial frames are always passed through to build the background
-        model before we start gating.
-
-        Args:
-            frame:        Cropped uint8 RGB frame.
-            camera_index: Determines which background model to use.
-
-        Returns:
-            Tuple of (motion_score, current_background).
-            motion_score is mean abs diff normalized to [0, 1].
-            current_background is the current model array, or None if not built.
+        so initial frames always pass through to build the background model.
         """
         bg = self._bg_primary if camera_index == self.primary_index else self._bg_secondary
 
@@ -419,11 +509,6 @@ class VisionCapture:
 
         Uses exponential moving average: bg = alpha * frame + (1 - alpha) * bg
         where alpha = 1 / background_history.
-
-        Args:
-            frame:        Current cropped frame (uint8).
-            camera_index: Which camera's model to update.
-            current_bg:   Current background model, or None if not yet initialized.
         """
         frame_float = frame.astype(np.float32) / 255.0
         alpha = 1.0 / self.background_history
@@ -444,21 +529,9 @@ class VisionCapture:
         """
         Save a cropped frame to disk as a PNG.
 
-        Saves the post-crop frame (crop_width × crop_height) rather than the
-        full-resolution capture. This keeps file sizes small (typically 50-200KB
-        vs 1-3MB for full resolution), stays well within Pushover's 2.5MB
-        attachment limit, and represents exactly what the classifier saw.
-
         Uses PIL for PNG encoding — no OpenCV dependency required.
         output_dir is absolute (resolved in __init__) so the returned path
         is always absolute regardless of working directory.
-
-        Args:
-            cropped_frame: Cropped (crop_height × crop_width, 3) uint8 RGB frame.
-            camera_index:  Used in filename to distinguish cameras.
-
-        Returns:
-            Absolute Path to the saved file, or None if save fails (non-fatal).
         """
         try:
             from PIL import Image  # type: ignore[import]
@@ -477,9 +550,8 @@ class VisionCapture:
 
     def stop(self) -> None:
         """
-        Stop both cameras and release picamera2 resources.
+        Stop both cameras and release all resources including HailoDetector.
 
-        Call when the agent loop terminates to cleanly shut down the hardware.
         Safe to call even if cameras were never opened.
         """
         for cam_attr in ("_picam0", "_picam1"):
@@ -491,3 +563,12 @@ class VisionCapture:
                     logger.info("Camera %s stopped.", cam_attr)
                 except Exception as exc:
                     logger.warning("Error stopping %s: %s", cam_attr, exc)
+
+        if self._detector is not None and self._detector_open:
+            try:
+                self._detector.close()
+                logger.info("HailoDetector closed.")
+            except Exception as exc:
+                logger.warning("Error closing HailoDetector: %s", exc)
+            self._detector = None
+            self._detector_open = False
