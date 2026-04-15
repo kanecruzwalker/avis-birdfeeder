@@ -34,10 +34,13 @@ Design notes:
     - _build_efficientnet() kept as the single source of truth for the extractor
       architecture — matches the notebook exactly.
 
-Phase 6 note:
-    When the Hailo .hef compilation succeeds, a HailoVisualClassifier subclass
-    will override predict() to run the compiled model via hailort bindings.
-    The interface (input shape, output ClassificationResult) stays identical.
+Phase 6 Hailo integration:
+    When hardware.yaml has hailo.enabled: true and the compiled .hef exists at
+    hailo.models.visual_hef, HailoVisualExtractor is used for feature extraction
+    instead of the CPU PyTorch path. The sklearn LogReg head always runs on CPU.
+    Falls back to CPU silently if hailo_platform is unavailable or HEF is missing.
+    The interface (input shape, output ClassificationResult) is identical for both
+    paths — BirdAgent and ScoreFuser are unaware of which backend is active.
 """
 
 from __future__ import annotations
@@ -62,9 +65,9 @@ class VisualClassifier:
     Wrapper around frozen EfficientNet-B0 + LogisticRegression for SD bird
     species classification.
 
-    The 1280-dim feature extractor is frozen at ImageNet pretrained weights.
-    A StandardScaler + LogisticRegression head trained on NABirds SD species
-    images provides the final classification.
+    The 1280-dim feature extractor runs on either CPU (PyTorch) or the Hailo
+    HAILO8L NPU, depending on hardware.yaml configuration. The sklearn LogReg
+    head always runs on CPU regardless of backend.
 
     Usage:
         classifier = VisualClassifier.from_config("configs/paths.yaml")
@@ -79,6 +82,8 @@ class VisualClassifier:
         extractor_path: str,
         sklearn_path: str,
         species_list_path: str,
+        hailo_hef_path: str | None = None,
+        hailo_enabled: bool = False,
         device: str | None = None,
     ) -> None:
         """
@@ -88,12 +93,20 @@ class VisualClassifier:
             sklearn_path:      Path to sklearn pipeline bundle (.pkl).
                                Contains scaler, clf, label_map, n_classes.
             species_list_path: Path to configs/species.yaml (code → names).
+            hailo_hef_path:    Path to compiled .hef file for Hailo inference.
+                               Read from hardware.yaml hailo.models.visual_hef.
+                               If None or file absent, CPU path is used.
+            hailo_enabled:     Whether to attempt Hailo inference. Controlled by
+                               hardware.yaml hailo.enabled. Falls back to CPU if
+                               hailo_platform unavailable or HEF missing.
             device:            Torch device string ('cpu', 'cuda'). Auto-detected if None.
-                               Note: feature extraction only — sklearn inference is CPU-only.
+                               Only used for the CPU inference path.
         """
         self.extractor_path = Path(extractor_path)
         self.sklearn_path = Path(sklearn_path)
         self.species_list_path = Path(species_list_path)
+        self.hailo_hef_path = Path(hailo_hef_path) if hailo_hef_path else None
+        self.hailo_enabled = hailo_enabled
         self.device = torch.device(
             device if device else ("cuda" if torch.cuda.is_available() else "cpu")
         )
@@ -104,12 +117,14 @@ class VisualClassifier:
         self._clf = None  # sklearn LogisticRegression
         self._label_map: dict[int, str] = {}  # int index → species_code
         self._species_meta: dict[str, dict] = {}  # code → {common_name, scientific_name}
+        self._hailo_extractor = None  # HailoVisualExtractor, lazy-loaded
 
         logger.info(
-            "VisualClassifier initialized | extractor=%s sklearn=%s device=%s",
+            "VisualClassifier initialized | extractor=%s sklearn=%s device=%s hailo=%s",
             self.extractor_path,
             self.sklearn_path,
             self.device,
+            "enabled" if hailo_enabled else "disabled",
         )
 
     @classmethod
@@ -120,6 +135,10 @@ class VisualClassifier:
         Reads:
             models.visual_frozen_extractor → extractor_path
             models.visual_sklearn          → sklearn_path
+
+        Also reads configs/hardware.yaml if present:
+            hailo.enabled                  → hailo_enabled
+            hailo.models.visual_hef        → hailo_hef_path
 
         Args:
             config_path: Path to configs/paths.yaml.
@@ -135,11 +154,24 @@ class VisualClassifier:
         sklearn_path = cfg["models"]["visual_sklearn"]
         species_list_path = config_path.parent / "species.yaml"
 
+        # Read Hailo config from hardware.yaml if available
+        hailo_enabled = False
+        hailo_hef_path = None
+        hw_path = config_path.parent / "hardware.yaml"
+        if hw_path.exists():
+            with hw_path.open() as f:
+                hw = yaml.safe_load(f)
+            hailo_cfg = hw.get("hailo", {})
+            hailo_enabled = hailo_cfg.get("enabled", False)
+            hailo_hef_path = hailo_cfg.get("models", {}).get("visual_hef")
+
         logger.info("VisualClassifier.from_config | paths.yaml=%s", config_path)
         return cls(
             extractor_path=extractor_path,
             sklearn_path=str(sklearn_path),
             species_list_path=str(species_list_path),
+            hailo_hef_path=hailo_hef_path,
+            hailo_enabled=hailo_enabled,
         )
 
     def _load(self) -> None:
@@ -182,7 +214,7 @@ class VisualClassifier:
         self._label_map = {int(k): v for k, v in bundle["label_map"].items()}
         n_classes = bundle["n_classes"]
 
-        # ── EfficientNet feature extractor ────────────────────────────────────
+        # ── EfficientNet feature extractor (CPU path) ─────────────────────────
         checkpoint = torch.load(self.extractor_path, map_location=self.device)
         self._extractor = _build_efficientnet()
         self._extractor.load_state_dict(checkpoint["model_state_dict"])
@@ -200,6 +232,34 @@ class VisualClassifier:
             self.extractor_path,
         )
 
+    def _load_hailo(self) -> bool:
+        """
+        Attempt to load HailoVisualExtractor for NPU-accelerated inference.
+
+        Returns True if Hailo is ready, False if falling back to CPU.
+        Falls back silently if hailo_platform unavailable or HEF missing —
+        the caller continues with the CPU path without raising.
+        """
+        if not self.hailo_enabled or not self.hailo_hef_path:
+            return False
+        if not self.hailo_hef_path.exists():
+            logger.warning(
+                "Hailo enabled but HEF not found at %s — falling back to CPU.",
+                self.hailo_hef_path,
+            )
+            return False
+        try:
+            from src.vision.hailo_extractor import HailoVisualExtractor
+
+            self._hailo_extractor = HailoVisualExtractor(str(self.hailo_hef_path))
+            self._hailo_extractor.open()
+            logger.info("Hailo inference active — HEF loaded from %s", self.hailo_hef_path)
+            return True
+        except Exception as exc:
+            logger.warning("Hailo load failed (%s) — falling back to CPU.", exc)
+            self._hailo_extractor = None
+            return False
+
     def predict(
         self,
         frame: np.ndarray,
@@ -208,9 +268,19 @@ class VisualClassifier:
         """
         Run inference on a preprocessed frame and return the top species prediction.
 
-        Pipeline:
+        Feature extraction runs on Hailo NPU if enabled and available, otherwise
+        falls back to CPU PyTorch. The sklearn LogReg head always runs on CPU.
+
+        Pipeline (CPU path):
             frame (224, 224, 3) HWC float32
                 → CHW transpose + batch dim → EfficientNet → 1280-dim feature
+                → StandardScaler → LogisticRegression.predict_proba()
+                → top species + confidence → ClassificationResult
+
+        Pipeline (Hailo path):
+            frame (224, 224, 3) HWC float32
+                → uint8 conversion → HailoVisualExtractor.extract()
+                → 1280-dim feature (dequantized float32)
                 → StandardScaler → LogisticRegression.predict_proba()
                 → top species + confidence → ClassificationResult
 
@@ -224,7 +294,7 @@ class VisualClassifier:
             ClassificationResult for the highest-confidence species prediction.
 
         Raises:
-            ValueError:  If frame has unexpected shape.
+            ValueError:   If frame has unexpected shape.
             RuntimeError: If artifacts have not been saved yet.
         """
         if self._extractor is None:
@@ -236,17 +306,28 @@ class VisualClassifier:
                 "Ensure preprocess_frame() was called before predict()."
             )
 
-        # ── Feature extraction ────────────────────────────────────────────────
-        # HWC (224, 224, 3) → CHW (3, 224, 224) → batch (1, 3, 224, 224)
-        tensor = (
-            torch.from_numpy(frame.astype(np.float32)).permute(2, 0, 1).unsqueeze(0).to(self.device)
-        )
+        # ── Feature extraction — Hailo fast path or CPU fallback ──────────────
+        # Attempt Hailo on first call when enabled; subsequent calls reuse extractor
+        if self._hailo_extractor is None and self.hailo_enabled:
+            self._load_hailo()
 
-        with torch.no_grad():
-            # extractor outputs (1, 1280) — global average pooled features
-            features = self._extractor(tensor).cpu().numpy()  # shape (1, 1280)
+        if self._hailo_extractor is not None and self._hailo_extractor.is_open:
+            # Hailo path: convert float32 [0,1] normalized frame to uint8 [0,255]
+            # HailoRT expects uint8 input — quantization handled internally by chip
+            frame_uint8 = (frame * 255).clip(0, 255).astype(np.uint8)
+            features = self._hailo_extractor.extract(frame_uint8)  # (1, 1280) float32
+        else:
+            # CPU path: HWC → CHW → batch tensor → EfficientNet forward pass
+            tensor = (
+                torch.from_numpy(frame.astype(np.float32))
+                .permute(2, 0, 1)
+                .unsqueeze(0)
+                .to(self.device)
+            )
+            with torch.no_grad():
+                features = self._extractor(tensor).cpu().numpy()  # (1, 1280)
 
-        # ── Sklearn classification ────────────────────────────────────────────
+        # ── Sklearn classification (always CPU) ───────────────────────────────
         features_scaled = self._scaler.transform(features)  # (1, 1280)
         probas = self._clf.predict_proba(features_scaled)[0]  # (n_classes,)
         pred_idx = int(probas.argmax())
@@ -255,10 +336,11 @@ class VisualClassifier:
         meta = self._species_meta.get(species_code, {})
 
         logger.debug(
-            "Visual predict: %s (%.3f) camera=%s",
+            "Visual predict: %s (%.3f) camera=%s backend=%s",
             species_code,
             confidence,
             camera_index,
+            "hailo" if (self._hailo_extractor and self._hailo_extractor.is_open) else "cpu",
         )
 
         return ClassificationResult(

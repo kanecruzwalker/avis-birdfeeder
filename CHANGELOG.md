@@ -10,6 +10,41 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+### Phase 6 — Hailo visual classifier wiring (PR #39)
+
+#### VisualClassifier Hailo integration
+- `src/vision/classify.py` — adds `hailo_enabled` and `hailo_hef_path` params
+  to `__init__()`. `from_config()` reads `hailo.enabled` and
+  `hailo.models.visual_hef` from `configs/hardware.yaml` automatically.
+  New `_load_hailo()` method attempts to open `HailoVisualExtractor` on first
+  `predict()` call when enabled, falling back silently to CPU PyTorch path if
+  `hailo_platform` is unavailable or HEF is missing. `predict()` routes to
+  Hailo or CPU — both paths produce identical `(1, 1280) float32` features
+  for the sklearn LogReg head. `BirdAgent` and `ScoreFuser` are unaware of
+  which backend is active.
+- `configs/hardware.yaml` — fixes `hailo.models.visual_hef` path from
+  `models/hailo/` to `models/visual/` (correct location of compiled HEF on
+  Pi). Sets `hailo.enabled: false` as safe committed default — set `true`
+  locally on Pi only, never committed (same pattern as `push: false`).
+
+#### Hardware validation (Pi, April 15 2026)
+- Full agent run confirmed with Hailo active: both cameras opened, audio
+  capturing, Hailo HEF loaded and VDevice ready on first predict() call.
+- Log confirmed: `Hailo inference active — HEF loaded from
+  models/visual/efficientnet_b0_avis_v2.hef`
+- Isolated inference test confirmed: backend=hailo, species prediction
+  returned (WBNU), clean shutdown with no segfault.
+
+#### Tests
+- All 408 existing tests pass — Hailo path only activates when
+  `hailo_enabled=True` and HEF exists, neither of which is true in
+  the test environment.
+
+### Test count
+- 408 passing, 0 failing, CI green
+
+---
+
 ### Phase 6 — Hailo HAILO8L hardware inference benchmark
 
 #### Hailo EfficientNet-B0 compilation and deployment (this PR)
