@@ -70,7 +70,7 @@ class HailoVisualExtractor:
         Using the extractor as a context manager is preferred for short-lived use.
     """
 
-    def __init__(self, hef_path: str | Path) -> None:
+    def __init__(self, hef_path: str | Path, shared_vdevice: object | None = None) -> None:
         """
         Args:
             hef_path: Path to the compiled .hef file on the Pi.
@@ -107,6 +107,9 @@ class HailoVisualExtractor:
         self._input_shape = inputs[0].shape  # expected (224, 224, 3)
         self._output_shape = outputs[0].shape  # expected (1280,)
 
+        self._shared_vdevice = shared_vdevice
+        self._owns_vdevice = shared_vdevice is None
+
         logger.info(
             "HailoVisualExtractor | hef=%s network=%s input=%s output=%s",
             self.hef_path.name,
@@ -127,10 +130,13 @@ class HailoVisualExtractor:
             logger.warning("HailoVisualExtractor.open() called when already open — ignoring.")
             return
 
-        params = VDevice.create_params()
-        params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
+        if self._shared_vdevice is not None:
+            self._vdevice = self._shared_vdevice
+        else:
+            params = VDevice.create_params()
+            params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
+            self._vdevice = VDevice(params).__enter__()
 
-        self._vdevice = VDevice(params).__enter__()
         infer_model = self._vdevice.create_infer_model(str(self.hef_path))
         infer_model.set_batch_size(1)
         self._configured_model = infer_model.configure().__enter__()
@@ -154,7 +160,7 @@ class HailoVisualExtractor:
                 logger.warning("Error closing configured model: %s", exc)
             self._configured_model = None
 
-        if self._vdevice is not None:
+        if self._owns_vdevice and self._vdevice is not None:
             try:
                 self._vdevice.__exit__(None, None, None)
             except Exception as exc:

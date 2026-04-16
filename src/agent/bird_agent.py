@@ -162,9 +162,14 @@ class BirdAgent:
         cooldown_seconds = thresholds["agent"].get("cooldown_seconds", 30.0)
 
         audio_classifier = AudioClassifier.from_config(str(paths_path))
-        visual_classifier = VisualClassifier.from_config(str(paths_path))
         audio_capture = AudioCapture.from_config(str(config_dir))
         vision_capture = VisionCapture.from_config(str(config_dir))
+        # Share Hailo VDevice between YOLO detector and EfficientNet extractor
+        visual_classifier = VisualClassifier.from_config(
+            str(paths_path),
+            shared_vdevice=vision_capture.get_shared_vdevice(),
+        )
+
         fuser = ScoreFuser.from_config(str(thr_path))
         notifier = Notifier.from_config(
             notify_config_path=str(notify_path),

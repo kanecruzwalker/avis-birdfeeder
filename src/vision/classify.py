@@ -85,6 +85,7 @@ class VisualClassifier:
         hailo_hef_path: str | None = None,
         hailo_enabled: bool = False,
         device: str | None = None,
+        shared_vdevice: object | None = None,
     ) -> None:
         """
         Args:
@@ -118,6 +119,7 @@ class VisualClassifier:
         self._label_map: dict[int, str] = {}  # int index → species_code
         self._species_meta: dict[str, dict] = {}  # code → {common_name, scientific_name}
         self._hailo_extractor = None  # HailoVisualExtractor, lazy-loaded
+        self._shared_vdevice = shared_vdevice
 
         logger.info(
             "VisualClassifier initialized | extractor=%s sklearn=%s device=%s hailo=%s",
@@ -128,7 +130,9 @@ class VisualClassifier:
         )
 
     @classmethod
-    def from_config(cls, config_path: str) -> VisualClassifier:
+    def from_config(
+        cls, config_path: str, shared_vdevice: object | None = None
+    ) -> VisualClassifier:
         """
         Construct a VisualClassifier from configs/paths.yaml.
 
@@ -155,7 +159,7 @@ class VisualClassifier:
         species_list_path = config_path.parent / "species.yaml"
 
         # Read Hailo config from hardware.yaml if available
-        hailo_enabled = False
+        hailo_enabled = (False,)
         hailo_hef_path = None
         hw_path = config_path.parent / "hardware.yaml"
         if hw_path.exists():
@@ -172,6 +176,7 @@ class VisualClassifier:
             species_list_path=str(species_list_path),
             hailo_hef_path=hailo_hef_path,
             hailo_enabled=hailo_enabled,
+            shared_vdevice=shared_vdevice,
         )
 
     def _load(self) -> None:
@@ -249,9 +254,12 @@ class VisualClassifier:
             )
             return False
         try:
-            from src.vision.hailo_extractor import HailoVisualExtractor
+            from src.vision.hailo_extractor import HailoVisualExtractor  # noqa: PLC0415
 
-            self._hailo_extractor = HailoVisualExtractor(str(self.hailo_hef_path))
+            self._hailo_extractor = HailoVisualExtractor(
+                str(self.hailo_hef_path),
+                shared_vdevice=self._shared_vdevice,
+            )
             self._hailo_extractor.open()
             logger.info("Hailo inference active — HEF loaded from %s", self.hailo_hef_path)
             return True

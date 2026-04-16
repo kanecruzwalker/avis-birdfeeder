@@ -167,6 +167,10 @@ evaluated against baselines. All training on laptop/Colab.
 - [ ] Course report written and submitted
 - [ ] `CHANGELOG.md` brought fully up to date
 
+- [x] `src/vision/hailo_detector.py` — HailoDetector, YOLOv8s on HAILO8L
+- [x] YOLO detect-then-classify pipeline wired into VisionCapture
+- [x] Shared VDevice — YOLO + EfficientNet both on NPU simultaneously
+
 ---
 
 ## 🔮 Post-Course / Future Directions

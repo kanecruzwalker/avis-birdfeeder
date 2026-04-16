@@ -168,6 +168,7 @@ class HailoDetector:
         iou_threshold: float = DEFAULT_IOU_THRESHOLD,
         min_bird_confidence: float = 0.25,
         min_crop_size: int = 40,
+        shared_vdevice: object | None = None,
     ) -> None:
         """
         Args:
@@ -193,6 +194,9 @@ class HailoDetector:
         self._configured = None
         self._out_buf_size: int = 0
         self.is_open: bool = False
+
+        self._shared_vdevice = shared_vdevice
+        self._owns_vdevice = shared_vdevice is None
 
         logger.info(
             "HailoDetector | hef=%s score_threshold=%.2f max_proposals=%d",
@@ -257,7 +261,11 @@ class HailoDetector:
                 "Expected at /usr/share/hailo-models/yolov8s_h8l.hef on Pi."
             )
 
-        self._vdevice = VDevice()
+        if self._shared_vdevice is not None:
+            self._vdevice = self._shared_vdevice
+        else:
+            self._vdevice = VDevice()
+
         model = self._vdevice.create_infer_model(str(self.hef_path))
         model.set_batch_size(1)
 
@@ -289,7 +297,10 @@ class HailoDetector:
         if self._configured is not None:
             self._configured.deactivate()
             self._configured = None
-        self._vdevice = None
+
+        if self._owns_vdevice:
+            self._vdevice = None
+
         self.is_open = False
         logger.info("HailoDetector closed.")
 

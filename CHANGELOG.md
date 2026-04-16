@@ -10,6 +10,65 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+### Phase 6 — YOLO detection pipeline (PR #40)
+
+#### HailoDetector — YOLOv8s bird detection on HAILO8L
+- `src/vision/hailo_detector.py` — new `HailoDetector` class wrapping
+  YOLOv8s HEF (pre-installed at /usr/share/hailo-models/yolov8s_h8l.hef).
+  Accepts full 1536×864 frames, resizes to 640×640 internally, decodes NMS
+  output buffer, returns Detection(x1,y1,x2,y2,confidence,class_id) in
+  original frame coordinates. NMS buffer: 80 classes × (4 + max_proposals × 20)
+  bytes. Count field per class is float32 not uint32 — verified on hardware.
+  PIL fallback for frame resize when cv2 unavailable (CI).
+- `src/vision/capture.py` — adds detection_mode param ("fixed_crop"|"yolo")
+  read from hardware.yaml hailo.detection_mode. Motion gate always uses
+  fixed_crop for efficiency. In yolo mode: YOLO runs on full frame, falls back
+  to fixed_crop if no bird detected. HailoDetector lazy loaded, closed in
+  stop(). CaptureResult gains detection_mode and detection_box fields.
+- `tests/vision/test_hailo_detector.py` — 35 unit tests (3 hardware
+  deselected in CI), NMS buffer decoder tested with synthetic buffers
+  matching exact Hailo YOLOv8 output format verified on Pi hardware.
+- `configs/hardware.yaml` — detection_mode: fixed_crop (safe committed
+  default), yolo_hef path, yolo score/proposal/confidence thresholds.
+- `requirements.txt` — numpy pinned to 1.26.4 (numpy 2.x breaks
+  torch.from_numpy on Python 3.11). opencv moved to requirements-pi.txt only.
+- `requirements-pi.txt` — opencv-python==4.10.0.84 added for frame resizing.
+
+#### Hardware validation (Pi, April 15 2026)
+- YOLO running each cycle: "Camera 0: YOLO no bird — falling back to fixed_crop"
+- Clean shutdown: "HailoDetector closed" confirmed, no segfault
+- Notifications firing with image attachments confirmed
+
+### Phase 6 — Shared Hailo VDevice (PR #41)
+
+#### VDevice conflict fix — YOLO + EfficientNet both on NPU
+- `src/vision/capture.py` — VisionCapture creates one shared VDevice eagerly
+  in __init__ when detection_mode=yolo. Adds get_shared_vdevice() accessor.
+  stop() releases shared VDevice after detector and cameras are closed.
+- `src/vision/hailo_detector.py` — accepts optional shared_vdevice param.
+  open() uses it instead of creating a new VDevice. close() only releases
+  VDevice if it owns it.
+- `src/vision/hailo_extractor.py` — accepts optional shared_vdevice param.
+  open() uses it instead of creating its own. close() only releases if it
+  owns it.
+- `src/vision/classify.py` — VisualClassifier.__init__ and from_config()
+  accept shared_vdevice param, passed to HailoVisualExtractor on first
+  _load_hailo() call.
+- `src/agent/bird_agent.py` — from_config() passes
+  vision_capture.get_shared_vdevice() to VisualClassifier.from_config().
+
+#### Hardware validation (Pi, April 15 2026)
+- Both YOLO and EfficientNet confirmed running on NPU simultaneously
+- Log confirmed: "Shared Hailo VDevice created (YOLO mode)"
+- Log confirmed: "Visual predict: backend=hailo" on both cameras
+- Log confirmed: "Shared Hailo VDevice released" on clean shutdown
+- No HAILO_OUT_OF_PHYSICAL_DEVICES(74) errors
+
+### Test count
+- 443 passing, 0 failing, CI green
+
+---
+
 ### Phase 6 — Hailo visual classifier wiring (PR #39)
 
 #### VisualClassifier Hailo integration
