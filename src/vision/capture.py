@@ -60,6 +60,14 @@ from pathlib import Path
 import numpy as np
 import yaml
 
+try:
+    from hailo_platform import VDevice as _HailoVDevice  # type: ignore[import]
+
+    HAILO_AVAILABLE = True
+except ImportError:
+    HAILO_AVAILABLE = False
+    _HailoVDevice = None  # type: ignore[assignment]
+
 from src.vision.preprocess import preprocess_frame
 
 logger = logging.getLogger(__name__)
@@ -136,6 +144,7 @@ class VisionCapture:
         yolo_max_proposals: int = 10,
         yolo_min_bird_confidence: float = 0.25,
         yolo_crop_padding: int = 20,
+        shared_vdevice: object | None = None,
     ) -> None:
         """
         Args:
@@ -197,6 +206,17 @@ class VisionCapture:
         # HailoDetector — lazy loaded on first YOLO detection
         self._detector = None
         self._detector_open = False
+
+        # Shared Hailo VDevice — created eagerly if YOLO mode, reused by VisualClassifier
+        self._shared_vdevice = None
+        if self.detection_mode == DETECTION_MODE_YOLO and self.hailo_yolo_hef:
+            try:
+                from hailo_platform import VDevice  # noqa: PLC0415
+
+                self._shared_vdevice = VDevice()
+                logger.info("Shared Hailo VDevice created (YOLO mode).")
+            except Exception as exc:
+                logger.warning("Could not create shared VDevice: %s", exc)
 
         logger.info(
             "VisionCapture initialized | cameras=[%d, %d] resolution=%dx%d "
@@ -322,13 +342,21 @@ class VisionCapture:
         try:
             from src.vision.hailo_detector import HailoDetector
 
+            if self._shared_vdevice is None and HAILO_AVAILABLE:
+                from hailo_platform import VDevice as _VD  # noqa: PLC0415
+
+                self._shared_vdevice = _VD()
+                logger.info("Shared Hailo VDevice created.")
+
             self._detector = HailoDetector(
                 hef_path=self.hailo_yolo_hef,
                 score_threshold=self.yolo_score_threshold,
                 max_proposals_per_class=self.yolo_max_proposals,
                 min_bird_confidence=self.yolo_min_bird_confidence,
+                shared_vdevice=self._shared_vdevice,
             )
             self._detector.open()
+
             self._detector_open = True
             logger.info(
                 "HailoDetector opened for YOLO detection | hef=%s",
@@ -572,3 +600,14 @@ class VisionCapture:
                 logger.warning("Error closing HailoDetector: %s", exc)
             self._detector = None
             self._detector_open = False
+
+        if self._shared_vdevice is not None:
+            try:
+                self._shared_vdevice = None
+                logger.info("Shared Hailo VDevice released.")
+            except Exception as exc:
+                logger.warning("Error releasing shared VDevice: %s", exc)
+
+    def get_shared_vdevice(self) -> object | None:
+        """Return the shared Hailo VDevice for use by VisualClassifier."""
+        return self._shared_vdevice
