@@ -1,0 +1,91 @@
+# scripts/avis.service
+#
+# Systemd service unit for Avis — Agentic AI Birdfeeder
+#
+# Installs the Avis ExperimentOrchestrator as a systemd service so the
+# system boots automatically when the Pi is powered on. No SSH required
+# after initial setup.
+#
+# ── Installation (run once on Pi) ────────────────────────────────────────────
+#
+#   sudo cp /mnt/data/avis-birdfeeder/scripts/avis.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable avis
+#   sudo systemctl start avis
+#
+# ── Status and logs ───────────────────────────────────────────────────────────
+#
+#   sudo systemctl status avis          # one-line health check
+#   sudo journalctl -u avis -f          # live log tail
+#   sudo journalctl -u avis --since today   # today's logs
+#
+# ── Stop / restart ────────────────────────────────────────────────────────────
+#
+#   sudo systemctl stop avis
+#   sudo systemctl restart avis
+#
+# ── Disable autostart ────────────────────────────────────────────────────────
+#
+#   sudo systemctl disable avis
+#
+# ── Why these specific settings ──────────────────────────────────────────────
+#
+#   After=network.target
+#       Pushover notifications require network access. This ensures the
+#       network stack is up before the agent tries to send the "live" push.
+#       Does not guarantee internet reachability — the agent handles that
+#       gracefully (push failures are logged, not fatal).
+#
+#   WorkingDirectory=/mnt/data/avis-birdfeeder
+#       All relative paths in configs/ are resolved from the project root.
+#       src/ imports use relative paths — must run from project root.
+#
+#   Environment=PYTHONPATH=/mnt/data/avis-birdfeeder
+#       Makes src/ importable without installing the package.
+#       Mirrors the manual run command in the dev workflow.
+#
+#   EnvironmentFile=/mnt/data/avis-birdfeeder/.env
+#       Loads PUSHOVER_USER_KEY and PUSHOVER_APP_TOKEN into the process
+#       environment without embedding secrets in this file. The .env file
+#       is gitignored — credentials stay off GitHub.
+#
+#   Restart=on-failure
+#       If the agent crashes (e.g. camera disconnected mid-run), systemd
+#       restarts it after RestartSec. Keeps the feeder monitored even
+#       after unexpected errors.
+#
+#   RestartSec=15
+#       15-second delay before restart gives the camera hardware time to
+#       reset after an unexpected disconnect.
+#
+#   StandardOutput=journal
+#   StandardError=journal
+#       Sends all Python logging output to systemd journal.
+#       Retrieve with: sudo journalctl -u avis
+#       The journal persists across reboots — full observation history
+#       is available for debugging even after a crash.
+#
+#   User=birdfeeder01
+#       Runs under the normal Pi user, not root. picamera2 and Hailo
+#       access are both granted to this user via group membership.
+#       Never run as root unless absolutely required.
+
+[Unit]
+Description=Avis Agentic AI Birdfeeder
+Documentation=https://github.com/kanecruzwalker/avis-birdfeeder
+After=network.target
+
+[Service]
+Type=simple
+User=birdfeeder01
+WorkingDirectory=/mnt/data/avis-birdfeeder
+Environment=PYTHONPATH=/mnt/data/avis-birdfeeder
+EnvironmentFile=/mnt/data/avis-birdfeeder/.env
+ExecStart=/mnt/data/avis-venv/bin/python -m src.agent.experiment_orchestrator
+Restart=on-failure
+RestartSec=15
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
