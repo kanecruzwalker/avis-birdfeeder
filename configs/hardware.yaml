@@ -130,3 +130,21 @@ hailo:
     score_threshold: 0.25
     max_proposals: 10
     min_bird_confidence: 0.25
+
+
+orchestrator:
+  window_minutes: 30
+  ab_modes: ["fixed_crop", "yolo"]
+  summary_hour_utc: 20
+  startup_delay_seconds: 10
+  push_window_summaries: false
+  daily_summaries_dir: "logs/daily_summaries"
+
+
+llm:
+  provider: "gemini"
+  model: "gemini-2.5-flash"
+  temperature: 0.2
+  max_tokens: 512
+  enabled: true
+  fallback_to_schedule: true

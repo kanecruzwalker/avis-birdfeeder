@@ -59,6 +59,10 @@ logs:
   # Agent runtime log
   agent: "logs/agent.log"
 
+
+  analyst_decisions: "logs/analyst_decisions.jsonl"
+  daily_summaries:   "logs/daily_summaries"
+
 captures:
   # Saved image frames from bird detections
   images: "data/captures/images"
