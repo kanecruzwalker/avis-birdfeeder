@@ -16,11 +16,8 @@ What is NOT tested here:
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from src.agent.bird_analyst_agent import (
     AnalystDecision,
@@ -28,7 +25,6 @@ from src.agent.bird_analyst_agent import (
     BirdAnalystAgent,
     _ToolExecutor,
 )
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

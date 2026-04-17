@@ -58,15 +58,14 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import yaml
 
 from src.agent.bird_agent import BirdAgent
-from src.notify.report_builder import ReportBuilder
 from src.agent.bird_analyst_agent import BirdAnalystAgent  # noqa: F401
-
+from src.notify.report_builder import ReportBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -228,7 +227,7 @@ class ExperimentOrchestrator:
             startup_delay_seconds=startup_delay_seconds,
             push_window_summaries=push_window_summaries,
             daily_summaries_dir=str(daily_summaries_dir),
-            analyst = analyst,        
+            analyst = analyst,
 
 
         )
@@ -296,25 +295,25 @@ class ExperimentOrchestrator:
     def _run_cycle(self):
         """
         One orchestration tick.
-    
+
         LLM path (when analyst.llm_available):
             Call analyst.advise() → execute AnalystDecision returned.
             The LLM decides whether to switch modes, push, or generate a report.
-    
+
         Fallback path (when LLM unavailable):
             Original fixed-schedule logic runs unchanged — A/B window timer,
             daily summary at summary_hour_utc, mode rotation.
-    
+
         Either path ends with BirdAgent._cycle() running — the feeder detection
         loop always executes regardless of which decision path ran above it.
         """
         now = datetime.now(UTC)
-    
+
         if self.analyst is not None and self.analyst.llm_available:
             # ── LLM path ──────────────────────────────────────────────────────
             window_elapsed = (now - self._window_start).total_seconds() / 60
             uptime = (now - self._boot_time).total_seconds() if hasattr(self, '_boot_time') else 0.0
-    
+
             decision = self.analyst.advise(
                 vision_capture=self.agent.vision_capture,
                 notifier=self.agent.notifier,
@@ -323,16 +322,16 @@ class ExperimentOrchestrator:
                 window_elapsed_minutes=window_elapsed,
                 window_total_minutes=self.window_minutes,
             )
-    
+
             if decision is not None:
                 # Execute what the agent decided
                 if decision.switch_mode and decision.switch_mode != self.current_detection_mode():
                     self._apply_detection_mode(decision.switch_mode)
                     self._window_start = now  # reset window on LLM-driven switch
-    
+
                 if decision.generate_report:
                     self._fire_daily_summary(now)
-    
+
                 if decision.push_message and decision.push_message != "[pushed by agent]":
                     # Agent set a message but didn't call push_notification directly
                     self._push_text(decision.push_message)
@@ -342,22 +341,22 @@ class ExperimentOrchestrator:
         else:
             # ── Fallback path — fixed schedule ────────────────────────────────
             self._fallback_cycle(now)
-    
+
         # Agent detection loop always runs regardless of decision path
         self.agent._cycle()
-    
-    
+
+
     def _fallback_cycle(self, now):
         """
         Fixed-schedule fallback logic — runs when LLM is unavailable.
-    
+
         This is the original _run_cycle logic extracted into its own method
         so the LLM path can call it as a fallback without code duplication.
         """
         window_elapsed = (now - self._window_start).total_seconds() / 60
         if window_elapsed >= self.window_minutes and len(self.ab_modes) > 1:
             self._rotate_detection_mode(window_end=now)
-    
+
         if self._should_fire_daily_summary(now):
             self._fire_daily_summary(now)
 

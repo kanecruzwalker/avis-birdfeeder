@@ -23,18 +23,14 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from pathlib import Path
-
-import pytest
 
 from src.notify.report_builder import (
     DailySummaryReport,
-    ExperimentWindowReport,
     ReportBuilder,
     SpeciesSummary,
 )
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

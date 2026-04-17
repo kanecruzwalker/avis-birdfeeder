@@ -117,8 +117,9 @@ def generate_daily_report(
         }
     """
     # Import here to avoid circular imports — tools are loaded by the agent
-    from src.notify.report_builder import ReportBuilder  # noqa: PLC0415
     from datetime import date as _date  # noqa: PLC0415
+
+    from src.notify.report_builder import ReportBuilder  # noqa: PLC0415
 
     try:
         target_date = (

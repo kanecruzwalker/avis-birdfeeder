@@ -11,16 +11,13 @@ structure, and the tool context injection pattern.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
 import yaml
 
 from src.agent.bird_analyst_agent import AnalystResponse
 from src.agent.langchain_analyst import LangChainAnalyst
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

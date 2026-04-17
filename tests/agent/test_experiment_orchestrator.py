@@ -25,13 +25,10 @@ from __future__ import annotations
 from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from src.agent.experiment_orchestrator import ExperimentOrchestrator
-from src.notify.report_builder import DailySummaryReport, ExperimentWindowReport, ReportBuilder
-
+from src.notify.report_builder import DailySummaryReport, ReportBuilder
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

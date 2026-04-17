@@ -66,8 +66,7 @@ from typing import Any
 
 import yaml
 
-from src.agent.tools import TOOL_REGISTRY, TOOL_SCHEMAS
-from src.agent.tools.action_tools import log_analyst_decision
+from src.agent.tools import TOOL_REGISTRY
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +177,7 @@ class _GeminiClient:
         self,
         system_prompt: str,
         user_message: str,
-        tool_executor: "_ToolExecutor",
+        tool_executor: _ToolExecutor,
         max_rounds: int = 6,
     ) -> tuple[str, list[str]]:
         """
@@ -189,7 +188,9 @@ class _GeminiClient:
 
         try:
             from langchain_core.messages import (  # type: ignore[import]
-                AIMessage, HumanMessage, SystemMessage, ToolMessage,
+                HumanMessage,
+                SystemMessage,
+                ToolMessage,
             )
 
             tools = self._build_langchain_tools(tool_executor)
@@ -232,7 +233,7 @@ class _GeminiClient:
             logger.warning("Gemini run_with_tools failed: %s", exc)
             return "", []
 
-    def _build_langchain_tools(self, tool_executor: "_ToolExecutor") -> list:
+    def _build_langchain_tools(self, tool_executor: _ToolExecutor) -> list:
         """Build LangChain tools with runtime context injected."""
         from src.agent.tools.langchain_tools import build_langchain_tools  # noqa: PLC0415
         return build_langchain_tools({

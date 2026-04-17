@@ -115,8 +115,8 @@ class DailySummaryReport:
         lines.append("")
 
         lines.append("## Overview")
-        lines.append(f"| Metric | Value |")
-        lines.append(f"|--------|-------|")
+        lines.append("| Metric | Value |")
+        lines.append("|--------|-------|")
         lines.append(f"| Total detections | {self.total_detections} |")
         lines.append(f"| Unique species | {self.unique_species} |")
         lines.append(f"| Mean confidence | {self.mean_confidence:.1%} |")

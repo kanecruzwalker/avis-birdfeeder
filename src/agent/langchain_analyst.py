@@ -67,7 +67,6 @@ Graceful degradation:
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from pathlib import Path
@@ -383,8 +382,7 @@ class LangChainAnalyst:
         call graph.get_graph().draw_mermaid() to get a Mermaid diagram.
         """
 
-        from langgraph.prebuilt import create_react_agent        
-        from langchain_core.messages import SystemMessage  # type: ignore
+        from langgraph.prebuilt import create_react_agent
 
         llm_with_tools = self._llm.bind_tools(self._tools)
 
@@ -539,7 +537,6 @@ class LangChainAnalyst:
 
         # ── Update memory layers ──────────────────────────────────────────
         # Layer 1: add this exchange to conversation history
-        from langchain_core.messages import AIMessage  # type: ignore
         self._message_history.append({"role": "user", "content": user_query})
         self._message_history.append({"role": "assistant", "content": final_text})
 
