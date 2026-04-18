@@ -1,0 +1,6 @@
+Phase,Modality,Model,Accuracy,Macro F1,Notes
+4,Audio,BirdNET pretrained,0.7441860465116279,0.7759964973803345,4× KNN baseline
+3,Audio,KNN (MFCC),0.313953488372093,0.19820486551497107,Baseline
+7,Fused,BirdNET + EfficientNet (a=0.55 v=0.45),0.9455676516329704,0.9448341611049973,"threshold=0.7, coverage=96%"
+4,Visual,Frozen EfficientNet + LogReg,0.9300595238095238,0.9305192773432625,8× SVM baseline
+3,Visual,SVM (HOG),0.20238095238095238,0.11794215105485882,Baseline
