@@ -50,7 +50,7 @@ python-dotenv==1.0.1       # Load .env file into os.environ
 # Phase 6 — Agentic LLM layer
 #google-generativeai==0.8.3
 # google-generativeai removed — use langchain-google-genai instead (no protobuf conflict)
-langchain-core==0.3.0
-langchain-google-genai==2.0.0
-langgraph==0.2.0
+langchain-core>=0.3.0
+langchain-google-genai>=2.0.0
+langgraph>=0.2.0
 langchain>=0.3.0
