@@ -1,10 +1,15 @@
-phase,notebook,modality,model,n_species,n_test,accuracy,macro_f1,weighted_f1,notes
-3,audio_baseline.ipynb,audio,KNN,18,86,0.302,0.191,0.293,"MFCC mean+std (n_mfcc=40, sr=48000), k=3. Baseline floor for Phase 4 comparison."
-3,visual_baseline.ipynb,visual,SVM,19,672,0.213,0.121,0.143,"HOG + color hist features, C=10.0 rbf. Baseline floor for Phase 4 comparison."
-4,audio_birdnet.ipynb,audio,CNN (mel spectrogram),18,86,0.116,0.089,0.093,"_build_audio_cnn, 30 epochs, weighted CE loss, Adam lr=1e-3. Underperforms KNN — insufficient data for CNN from scratch."
-4,audio_birdnet.ipynb,audio,BirdNET pretrained (birdnetlib 0.9.0),18,86,0.744,0.776,0.823,"BirdNET global model, no fine-tuning, min_conf=0.1, matched on scientific_name. resampy installed, 66/86 files detected."
-4,visual_efficientnet.ipynb,visual,EfficientNet-B0 (fine-tuned),19,672,0.103,0.097,0.093,"EfficientNet-B0 timm, phase A 10ep head-only lr=1e-3, phase B 15ep full lr=1e-4. Overfits — insufficient data for full fine-tuning."
-4,visual_efficientnet.ipynb,visual,Frozen EfficientNet-B0 + LogisticRegression,19,672,0.93,0.931,0.93,"timm efficientnet_b0 pretrained=True frozen, LogReg C=0.1, StandardScaler. ImageNet features transfer well to bird species."
-6,hailo_benchmark.ipynb,visual,CPU EfficientNet-B0 inference baseline,19,50,,,,"PyTorch CPU forward pass, mean=82.60ms. Backbone only (no LogReg head). Reference for Hailo comparison."
-6,hailo_benchmark.ipynb,visual,Hailo HAILO8L ResNet-50 raw throughput,1000,50,,,,"Pre-compiled ResNet-50 HEF, default VDevice (no ROUND_ROBIN). mean=0.25ms. Establishes raw NPU throughput upper bound."
-6,hailo_benchmark.ipynb,visual,"Hailo HAILO8L EfficientNet-B0 (ours, ROUND_ROBIN)",19,50,,,,Our trained frozen_extractor.pt compiled via DFC 3.32.0 to HEF. ROUND_ROBIN scheduler required. mean=13.04ms = 6.3x speedup vs CPU. Calibrated on 64 real SD bird images.
+phase,notebook,modality,model,n_species,n_test,accuracy,macro_f1,weighted_f1,notes,features,best_params,test_accuracy,n_train,species_count,timestamp
+3,audio_baseline.ipynb,audio,KNN,18.0,86,0.302,0.191,0.293,"MFCC mean+std (n_mfcc=40, sr=48000), k=3. Baseline floor for Phase 4 comparison.",,,,,,
+3,visual_baseline.ipynb,visual,SVM,19.0,672,0.213,0.121,0.143,"HOG + color hist features, C=10.0 rbf. Baseline floor for Phase 4 comparison.",,,,,,
+4,audio_birdnet.ipynb,audio,CNN (mel spectrogram),18.0,86,0.116,0.089,0.093,"_build_audio_cnn, 30 epochs, weighted CE loss, Adam lr=1e-3. Underperforms KNN — insufficient data for CNN from scratch.",,,,,,
+4,audio_birdnet.ipynb,audio,BirdNET pretrained (birdnetlib 0.9.0),18.0,86,0.744,0.776,0.823,"BirdNET global model, no fine-tuning, min_conf=0.1, matched on scientific_name. resampy installed, 66/86 files detected.",,,,,,
+4,visual_efficientnet.ipynb,visual,EfficientNet-B0 (fine-tuned),19.0,672,0.103,0.097,0.093,"EfficientNet-B0 timm, phase A 10ep head-only lr=1e-3, phase B 15ep full lr=1e-4. Overfits — insufficient data for full fine-tuning.",,,,,,
+4,visual_efficientnet.ipynb,visual,Frozen EfficientNet-B0 + LogisticRegression,19.0,672,0.93,0.931,0.93,"timm efficientnet_b0 pretrained=True frozen, LogReg C=0.1, StandardScaler. ImageNet features transfer well to bird species.",,,,,,
+6,hailo_benchmark.ipynb,visual,CPU EfficientNet-B0 inference baseline,19.0,50,,,,"PyTorch CPU forward pass, mean=82.60ms. Backbone only (no LogReg head). Reference for Hailo comparison.",,,,,,
+6,hailo_benchmark.ipynb,visual,Hailo HAILO8L ResNet-50 raw throughput,1000.0,50,,,,"Pre-compiled ResNet-50 HEF, default VDevice (no ROUND_ROBIN). mean=0.25ms. Establishes raw NPU throughput upper bound.",,,,,,
+6,hailo_benchmark.ipynb,visual,"Hailo HAILO8L EfficientNet-B0 (ours, ROUND_ROBIN)",19.0,50,,,,Our trained frozen_extractor.pt compiled via DFC 3.32.0 to HEF. ROUND_ROBIN scheduler required. mean=13.04ms = 6.3x speedup vs CPU. Calibrated on 64 real SD bird images.,,,,,,
+7,phase7_evaluation.ipynb,audio,KNN (MFCC) — held-out eval,,86,,0.198,0.302,Phase 3 KNN artifact re-evaluated on held-out test set.,"MFCC mean+std (n_mfcc=40, sr=48000)","k=3, metric=euclidean",0.314,,18.0,2026-04-18 03:17
+7,phase7_evaluation.ipynb,audio,BirdNET pretrained — held-out eval,,86,,0.776,0.823,"BirdNET global model, held-out test. Unknown: 20/86.",birdnetlib 0.9.0 global model,min_conf=0.1,0.744,,18.0,2026-04-18 03:17
+7,phase7_evaluation.ipynb,visual,SVM (HOG) — held-out eval,,672,,0.118,0.139,Phase 3 SVM artifact re-evaluated on held-out test set.,HOG + color hist 26340-dim,C=10.0 rbf gamma=scale,0.202,,19.0,2026-04-18 03:17
+7,phase7_evaluation.ipynb,visual,Frozen EfficientNet + LogReg — held-out eval,,672,,0.931,0.93,"timm EfficientNet-B0 frozen, LogReg C=0.1, held-out test set.",timm efficientnet_b0 frozen backbone,LogReg C=0.1 StandardScaler,0.93,,19.0,2026-04-18 03:17
+7,phase7_evaluation.ipynb,fused,BirdNET+EfficientNet fused (a=0.55),,672,,0.945,,"Weighted fusion audio=0.55 visual=0.45, threshold=0.7, coverage=96%.",audio=0.55 visual=0.45 weighted fusion,threshold=0.7,0.946,,19.0,2026-04-18 03:17
