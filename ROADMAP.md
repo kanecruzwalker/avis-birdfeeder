@@ -176,6 +176,113 @@ evaluated against baselines. All training on laptop/Colab.
 - [x] 14 shared calibration + observation tools
 - [x] agent_demo.ipynb — validated with live Gemini API calls on Pi
 - [ ] Mount cameras at feeder — tune feeder_crop
+
+
+## ✅ Phase 6 — Hardware + Agentic Layer (Complete)
+- [x] Hailo EfficientNet-B0 HEF compiled and deployed (6.3× CPU speedup)
+- [x] HailoVisualExtractor wired into VisualClassifier
+- [x] HailoDetector — YOLOv8s on HAILO8L
+- [x] Shared VDevice — YOLO + EfficientNet both on NPU simultaneously
+- [x] Push notifications with image attachments
+- [x] BirdAnalystAgent — custom Gemini tool-calling agent
+- [x] LangChainAnalyst — LangGraph ReAct agent, 3 memory layers
+- [x] ExperimentOrchestrator — autonomous Pi controller, systemd boot
+- [x] 14 shared calibration + observation tools
+- [x] ReportBuilder — daily + window reports (.md + .json)
+- [x] agent_demo.ipynb — validated with live Gemini API calls on Pi
+- [x] phase7_evaluation.ipynb scaffold
+
+## ✅ Phase 7 — Held-out Evaluation + Autonomous Deployment (Complete)
+- [x] Held-out test set evaluation (audio n=86, visual n=672)
+- [x] Confusion matrices for all models
+- [x] Comparison table: baseline vs pretrained vs fused
+- [x] Dataset size ablation curve
+- [x] Fusion weight sensitivity analysis
+- [x] Pi systemd boot autostart installed and verified
+- [x] pi.ps1 laptop management shortcuts
+- [x] BaselineOptimizer stub (OpenClaw-targeted)
+
+## ⏳ Phase 8 — Extended Metrics, Stereo Vision, Web Dashboard
+**Goal:** Complete all remaining course deliverables and build the
+user-facing product layer.
+
+### 8A — Extended Metrics (feat/extended-metrics)
+- [ ] ROC-AUC per class added to phase7_evaluation.ipynb
+- [ ] Per-class precision and recall table
+- [ ] Professor rubric metrics verified 
+- [ ] LangGraph Mermaid agent diagram rendered and saved
+- [ ] Fusion weight retuning to optimal (audio=0.05, F1=0.974)
+- [ ] All metrics feeding into report section
+
+### 8B — Stereo Vision (feat/stereo-vision)
+- [ ] scripts/calibrate_stereo.py — checkerboard calibration on Pi
+- [ ] StereoEstimator._rectify() — undistort + stereo rectification
+- [ ] StereoEstimator._compute_disparity() — SGBM disparity map
+- [ ] StereoEstimator._disparity_to_depth() — depth from baseline + focal length
+- [ ] BirdObservation.estimated_depth_cm populated on live detections
+- [ ] Agent tool: get_last_depth_estimate() — LLM can reason about bird distance
+- [ ] Tests for stereo pipeline (synthetic calibration data)
+
+### 8C — Web Dashboard + Live Feed (feat/web-dashboard)
+- [ ] src/web/app.py — FastAPI server
+      GET /            — HTML dashboard (single page)
+      GET /stream      — MJPEG live video (640×360 @ 10fps, background thread)
+      GET /frame       — latest annotated detection frame (JPEG, YOLO box overlay)
+      GET /latest      — latest BirdObservation as JSON
+      GET /observations — last N detections from observations.jsonl
+      GET /status      — agent uptime, detection count, current mode
+      POST /ask        — conversational query → BirdAnalystAgent.answer()
+      GET /health      — unauthenticated health check
+- [ ] src/web/frame_annotator.py — PIL: draw YOLO box + species + confidence
+- [ ] src/web/stream_buffer.py — thread-safe ring buffer for MJPEG frames
+- [ ] src/web/templates/index.html — responsive single-page dashboard
+      Live MJPEG stream | Latest annotated detection | Recent observations
+      Agent chat interface | Status bar (mode, uptime, detection count)
+- [ ] src/agent/cli.py — terminal Q&A interface (dev path)
+      Interactive loop: reads stdin, calls analyst.answer(), prints response
+- [ ] Token auth middleware (AVIS_WEB_TOKEN in .env)
+      All endpoints except /health require token query param or header
+      Protects Gemini API credits and observation data
+- [ ] Tailscale installation and configuration
+      scripts/install_tailscale.sh — one-command setup
+      Persistent private IP, end-to-end encrypted, no public exposure
+      Access revocable per-device from Tailscale admin panel
+- [ ] ngrok support for ephemeral demo sharing
+      scripts/start_ngrok.sh — starts tunnel, prints public URL
+      Use only for time-limited demos, never left running unattended
+- [ ] CORS headers for cross-origin access
+- [ ] avis.service update — start web server alongside orchestrator
+
+### 8D — Report + Slides (last, after 8A-8C merged)
+- [ ] IEEE report — three chapters:
+      Ch1: Baseline problem (classical features + limited data = near-random)
+      Ch2: Transfer learning solution (BirdNET + EfficientNet = dramatic improvement)
+      Ch3: Agentic system (autonomous monitoring + LLM reasoning + live dashboard)
+- [ ] Slide deck using Phase 7 charts, confusion matrices, live Pi screenshots
+- [ ] Demo video — Pi booting autonomously, detection firing, dashboard showing
+      live feed, conversational query answered by agent
+
+### 8E — Stubs (architecture documented, implementation post-course)
+- [ ] BaselineOptimizer implementation (OpenClaw framework)
+      Already stubbed in src/agent/baseline_optimizer.py
+- [ ] Dataset expansion (additional Xeno-canto species + iNaturalist visual)
+      Already stubbed in scripts/expand_dataset.py (to be created)
+- [ ] Webhook push to web dashboard (notifier.py _webhook() stub already exists)
+
+## 🔮 Post-Course / Future
+- Commercial weatherproof enclosure + solar power
+- Mobile app (iOS/Android) with species photo push notifications
+- Species expansion beyond 20 SD species to full North American dataset
+- Multi-feeder network contributing to eBird-style community database
+- OpenClaw BaselineOptimizer — autonomous hyperparameter search
+- Stereo-based size estimation for species disambiguation
+
+
+
+
+
+
+
 - [ ] Phase 7 evaluation — held-out test set, confusion matrices, comparison table
 - [ ] Course report and slide deck
 

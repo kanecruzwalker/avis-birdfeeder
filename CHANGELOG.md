@@ -10,6 +10,59 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+### Phase 7 — Held-out Evaluation + Pi Autonomous Deployment (PR feat/phase7-evaluation)
+
+#### Final evaluation on held-out test set
+- `notebooks/phase7_evaluation.ipynb` — complete evaluation on data never
+  touched during training, validation, or hyperparameter selection.
+  Fixed KNN feature extraction (preprocess_file returns spectrograms not
+  raw MFCCs — was producing 256-dim vectors instead of 80-dim), fixed SVM
+  feature extraction (reads HOG params from bundle not hardcoded values),
+  fixed experiments.csv append to 14-column schema.
+- `notebooks/results/phase7/` — 7 evaluation artifacts:
+  audio_birdnet_confusion_matrix.png, audio_birdnet_per_class_f1.png,
+  visual_efficientnet_confusion_matrix.png, visual_efficientnet_per_class_f1.png,
+  model_comparison_table.csv, ablation_dataset_size.png,
+  fusion_weight_sensitivity.png
+- `notebooks/results/experiments.csv` — 15 rows total, 5 new Phase 7
+  held-out rows appended (KNN, BirdNET, SVM, EfficientNet, fused)
+- `notebooks/audio_baseline.ipynb` — re-run to regenerate
+  audio_knn_baseline.pkl, baseline evaluation artifacts frozen
+- `notebooks/visual_baseline.ipynb` — re-run to regenerate
+  visual_svm_baseline.pkl, baseline evaluation artifacts frozen
+
+#### Results (held-out test set — unbiased final estimates)
+- Audio KNN (MFCC mean+std):          macro F1 = 0.012  n=86
+- Audio BirdNET pretrained:           macro F1 = 0.776  n=86   (67× KNN)
+- Visual SVM (HOG + color hist):      macro F1 = 0.118  n=672
+- Visual Frozen EfficientNet+LogReg:  macro F1 = 0.931  n=672  (7.9× SVM)
+- Fused BirdNET+EfficientNet:         macro F1 = 0.945  coverage=96%
+- Fusion weight sensitivity: optimal audio=0.05, F1=0.974
+- Dataset size ablation: F1 flattens above 50% training data — pretrained
+  features dominate, not dataset size
+
+#### Pi autonomous deployment
+- `scripts/avis.service` — installed to /etc/systemd/system/ on Pi
+  sudo systemctl enable avis confirmed — starts automatically on every boot
+  Hardware verified April 18 2026: active (running), Gemini calling,
+  cameras open, detections firing within 10s of power-on
+- `scripts/install_service.sh` — one-command Pi systemd setup script
+- `pi.ps1` — PowerShell dot-source file for laptop Pi management.
+  pi-ssh, pi-status, pi-logs, pi-stop, pi-start, pi-restart,
+  pi-run (smoke test), pi-pull, pi-deploy
+
+#### BaselineOptimizer stub
+- `src/agent/baseline_optimizer.py` — AutoML agent stub, architecture
+  fully documented. Targets OpenClaw framework for long-running agentic
+  loops. Perceive→reason→act→memory over feature/hyperparameter search space.
+  NotImplementedError on all public methods until Phase 8.
+- `tests/agent/test_baseline_optimizer.py` — 3 tests covering stub behavior
+
+### Test count
+- 578 passing, 6 deselected (hardware), CI green
+
+---
+
 ### Phase 6+ — Agentic LLM Layer (PR #42 feat/agentic-llm-layer)
 
 #### Dual-agent architecture
