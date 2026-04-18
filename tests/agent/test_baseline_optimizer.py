@@ -1,5 +1,6 @@
 """Tests for BaselineOptimizer stub."""
 import pytest
+
 from src.agent.baseline_optimizer import BaselineOptimizer
 
 
