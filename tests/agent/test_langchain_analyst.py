@@ -46,6 +46,7 @@ def _make_analyst(
 def _mock_graph_result(text: str, tools: list[str] | None = None) -> dict:
     """Build a fake LangGraph result dict."""
     from unittest.mock import MagicMock
+
     msgs = []
     if tools:
         tool_msg = MagicMock()
@@ -108,13 +109,12 @@ class TestGracefulDegradation:
 
 
 class TestAnswerWithMockedGraph:
-    def _make_with_mock_graph(self, tmp_path: Path, response_text: str,
-                               tools: list[str] | None = None) -> LangChainAnalyst:
+    def _make_with_mock_graph(
+        self, tmp_path: Path, response_text: str, tools: list[str] | None = None
+    ) -> LangChainAnalyst:
         a = _make_analyst(tmp_path, available=True)
         a._graph = MagicMock()
-        a._graph.invoke = MagicMock(
-            return_value=_mock_graph_result(response_text, tools)
-        )
+        a._graph.invoke = MagicMock(return_value=_mock_graph_result(response_text, tools))
         return a
 
     def test_returns_analyst_response(self, tmp_path: Path) -> None:
@@ -124,14 +124,12 @@ class TestAnswerWithMockedGraph:
         assert resp.answer == "3 species today."
 
     def test_tools_called_captured(self, tmp_path: Path) -> None:
-        a = self._make_with_mock_graph(tmp_path, "House Finch ×5.",
-                                        tools=["get_top_species"])
+        a = self._make_with_mock_graph(tmp_path, "House Finch ×5.", tools=["get_top_species"])
         resp = a.answer("What birds?")
         assert "get_top_species" in resp.tools_called
 
     def test_confidence_high_when_tools_called(self, tmp_path: Path) -> None:
-        a = self._make_with_mock_graph(tmp_path, "HOFI ×5.",
-                                        tools=["get_top_species"])
+        a = self._make_with_mock_graph(tmp_path, "HOFI ×5.", tools=["get_top_species"])
         resp = a.answer("Birds today?")
         assert resp.confidence == "high"
 
@@ -161,9 +159,7 @@ class TestConversationBufferMemory:
     def _make(self, tmp_path: Path) -> LangChainAnalyst:
         a = _make_analyst(tmp_path, available=True)
         a._graph = MagicMock()
-        a._graph.invoke = MagicMock(
-            return_value=_mock_graph_result("Response.")
-        )
+        a._graph.invoke = MagicMock(return_value=_mock_graph_result("Response."))
         return a
 
     def test_history_builds_across_turns(self, tmp_path: Path) -> None:
@@ -180,7 +176,7 @@ class TestConversationBufferMemory:
         # History stored is unbounded internally but window applied at query time
         assert len(a._message_history) == 20  # stored all
         # Window is applied when building messages for next query
-        windowed = a._message_history[-(a.memory_window_k * 2):]
+        windowed = a._message_history[-(a.memory_window_k * 2) :]
         assert len(windowed) == 4  # 2 exchanges × 2 messages
 
     def test_reset_clears_history(self, tmp_path: Path) -> None:

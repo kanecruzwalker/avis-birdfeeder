@@ -91,6 +91,7 @@ class AnalystDecision:
         tools_called:       Names of tools the LLM called this cycle.
         llm_available:      False if this decision came from fallback logic.
     """
+
     reasoning: str = ""
     switch_mode: str | None = None
     push_message: str | None = None
@@ -116,6 +117,7 @@ class AnalystResponse:
         llm_available:  False if the answer was generated without LLM reasoning.
         error:          Non-None if something went wrong.
     """
+
     answer: str = ""
     data: dict[str, Any] = field(default_factory=dict)
     tools_called: list[str] = field(default_factory=list)
@@ -220,10 +222,12 @@ class _GeminiClient:
                     logger.debug("LLM calling tool: %s(%s)", name, args)
                     result = tool_executor.execute(name, args)
 
-                    messages.append(ToolMessage(
-                        content=json.dumps(result, default=str),
-                        tool_call_id=tool_id,
-                    ))
+                    messages.append(
+                        ToolMessage(
+                            content=json.dumps(result, default=str),
+                            tool_call_id=tool_id,
+                        )
+                    )
 
                 rounds += 1
 
@@ -236,15 +240,19 @@ class _GeminiClient:
     def _build_langchain_tools(self, tool_executor: _ToolExecutor) -> list:
         """Build LangChain tools with runtime context injected."""
         from src.agent.tools.langchain_tools import build_langchain_tools  # noqa: PLC0415
-        return build_langchain_tools({
-            "observations_path": tool_executor.observations_path,
-            "thresholds_path": "configs/thresholds.yaml",
-            "daily_summaries_dir": tool_executor.daily_summaries_dir,
-            "vision_capture": tool_executor.vision_capture,
-            "notifier": tool_executor.notifier,
-            "current_mode": tool_executor.current_mode,
-            "decisions_log_path": tool_executor.decisions_log_path,
-        })
+
+        return build_langchain_tools(
+            {
+                "observations_path": tool_executor.observations_path,
+                "thresholds_path": "configs/thresholds.yaml",
+                "daily_summaries_dir": tool_executor.daily_summaries_dir,
+                "vision_capture": tool_executor.vision_capture,
+                "notifier": tool_executor.notifier,
+                "current_mode": tool_executor.current_mode,
+                "decisions_log_path": tool_executor.decisions_log_path,
+            }
+        )
+
 
 class _ToolExecutor:
     """
@@ -288,9 +296,13 @@ class _ToolExecutor:
 
         try:
             # Inject runtime args that aren't in the LLM schema
-            if tool_name in ("read_recent_observations", "get_detection_stats",
-                             "query_species_history", "get_top_species",
-                             "get_feeder_health"):
+            if tool_name in (
+                "read_recent_observations",
+                "get_detection_stats",
+                "query_species_history",
+                "get_top_species",
+                "get_feeder_health",
+            ):
                 return fn(observations_path=self.observations_path, **args)
 
             elif tool_name == "switch_detection_mode":
@@ -315,10 +327,12 @@ class _ToolExecutor:
 
             elif tool_name == "get_time_context":
                 from src.agent.tools.system_tools import get_time_context  # noqa: PLC0415
+
                 return get_time_context()
 
             elif tool_name == "get_current_system_status":
                 from src.agent.tools.system_tools import get_current_system_status  # noqa: PLC0415
+
                 return get_current_system_status(**args)
 
             else:
@@ -406,12 +420,12 @@ class BirdAnalystAgent:
         status = "enabled" if (self._client and self._client.available) else "disabled/fallback"
         logger.info(
             "BirdAnalystAgent initialised | provider=%s model=%s status=%s",
-            provider, model, status,
+            provider,
+            model,
+            status,
         )
 
-    def _init_client(
-        self, provider: str, model: str, temperature: float, max_tokens: int
-    ) -> Any:
+    def _init_client(self, provider: str, model: str, temperature: float, max_tokens: int) -> Any:
         """
         Initialise the LLM client for the configured provider.
 
@@ -468,9 +482,7 @@ class BirdAnalystAgent:
         if paths_path.exists():
             with paths_path.open() as f:
                 paths_cfg = yaml.safe_load(f)
-            observations_path = paths_cfg.get("logs", {}).get(
-                "observations", observations_path
-            )
+            observations_path = paths_cfg.get("logs", {}).get("observations", observations_path)
             decisions_log_path = paths_cfg.get("logs", {}).get(
                 "analyst_decisions", decisions_log_path
             )
@@ -493,9 +505,7 @@ class BirdAnalystAgent:
     def llm_available(self) -> bool:
         """True if the LLM client is initialised and available."""
         return (
-            self.enabled
-            and self._client is not None
-            and getattr(self._client, "available", False)
+            self.enabled and self._client is not None and getattr(self._client, "available", False)
         )
 
     # ── Proactive advise() ────────────────────────────────────────────────────
@@ -591,9 +601,7 @@ class BirdAnalystAgent:
         # Infer switch_mode from whether switch_detection_mode was called
         # The executor captures the last call's new_mode via vision_capture
         if "switch_detection_mode" in tools_called and executor.vision_capture:
-            decision.switch_mode = getattr(
-                executor.vision_capture, "detection_mode", None
-            )
+            decision.switch_mode = getattr(executor.vision_capture, "detection_mode", None)
 
         # Infer push from push_notification being called
         if "push_notification" in tools_called:

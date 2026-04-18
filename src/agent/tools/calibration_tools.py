@@ -117,8 +117,7 @@ def run_fusion_weight_sweep(
     # Only sweep over observations where both modalities fired
     # Single-modality observations aren't affected by fusion weights
     both_modal = [
-        o for o in obs
-        if o.get("audio_result") is not None and o.get("visual_result") is not None
+        o for o in obs if o.get("audio_result") is not None and o.get("visual_result") is not None
     ]
 
     if len(both_modal) < 5:
@@ -143,11 +142,13 @@ def run_fusion_weight_sweep(
     for o in both_modal:
         audio_conf = float(
             o.get("audio_result", {}).get("confidence", 0.0)
-            if isinstance(o.get("audio_result"), dict) else 0.0
+            if isinstance(o.get("audio_result"), dict)
+            else 0.0
         )
         visual_conf = float(
             o.get("visual_result", {}).get("confidence", 0.0)
-            if isinstance(o.get("visual_result"), dict) else 0.0
+            if isinstance(o.get("visual_result"), dict)
+            else 0.0
         )
         if audio_conf > 0 and visual_conf > 0:
             samples.append((audio_conf, visual_conf))
@@ -175,13 +176,15 @@ def run_fusion_weight_sweep(
         vw = round(1.0 - aw, 2)
         fused = [aw * a + vw * v for a, v in samples]
         above = sum(1 for f in fused if f >= threshold)
-        sweep_results.append({
-            "audio_weight": aw,
-            "visual_weight": vw,
-            "mean_fused_confidence": round(mean(fused), 4),
-            "detections_above_threshold": above,
-            "coverage_pct": round(above / len(fused) * 100, 1),
-        })
+        sweep_results.append(
+            {
+                "audio_weight": aw,
+                "visual_weight": vw,
+                "mean_fused_confidence": round(mean(fused), 4),
+                "detections_above_threshold": above,
+                "coverage_pct": round(above / len(fused) * 100, 1),
+            }
+        )
 
     sweep_results.sort(key=lambda x: x["mean_fused_confidence"], reverse=True)
     best = sweep_results[0]
@@ -295,13 +298,15 @@ def evaluate_detection_threshold(
     for t in thresholds:
         passed = [c for c in confidences if c >= t]
         suppressed = len(confidences) - len(passed)
-        sweep_results.append({
-            "threshold": t,
-            "detections_passed": len(passed),
-            "detections_suppressed": suppressed,
-            "pass_rate_pct": round(len(passed) / len(confidences) * 100, 1),
-            "mean_confidence_passed": round(mean(passed), 3) if passed else 0.0,
-        })
+        sweep_results.append(
+            {
+                "threshold": t,
+                "detections_passed": len(passed),
+                "detections_suppressed": suppressed,
+                "pass_rate_pct": round(len(passed) / len(confidences) * 100, 1),
+                "mean_confidence_passed": round(mean(passed), 3) if passed else 0.0,
+            }
+        )
 
     # Recommend the threshold that passes ≥70% of detections with ≥0.75 mean conf
     # This is a practical heuristic — the agent can override with its own reasoning
@@ -471,8 +476,10 @@ def apply_fusion_weights(
 
     if not (0 < audio_weight < 1):
         return {
-            "success": False, "dry_run": dry_run,
-            "previous": {}, "applied": {},
+            "success": False,
+            "dry_run": dry_run,
+            "previous": {},
+            "applied": {},
             "path": thresholds_path,
             "message": f"Invalid audio_weight={audio_weight}. Must be in (0, 1).",
         }
@@ -480,8 +487,10 @@ def apply_fusion_weights(
     weight_sum = round(audio_weight + visual_weight, 3)
     if abs(weight_sum - 1.0) > 0.01:
         return {
-            "success": False, "dry_run": dry_run,
-            "previous": {}, "applied": {},
+            "success": False,
+            "dry_run": dry_run,
+            "previous": {},
+            "applied": {},
             "path": thresholds_path,
             "message": (
                 f"Weights must sum to 1.0. Got {weight_sum}. "
@@ -492,8 +501,10 @@ def apply_fusion_weights(
     path = Path(thresholds_path)
     if not path.exists():
         return {
-            "success": False, "dry_run": dry_run,
-            "previous": {}, "applied": {},
+            "success": False,
+            "dry_run": dry_run,
+            "previous": {},
+            "applied": {},
             "path": thresholds_path,
             "message": f"thresholds.yaml not found at {thresholds_path}.",
         }
@@ -508,7 +519,8 @@ def apply_fusion_weights(
 
     if dry_run:
         return {
-            "success": True, "dry_run": True,
+            "success": True,
+            "dry_run": True,
             "previous": previous,
             "applied": {"audio": audio_weight, "visual": visual_weight},
             "path": thresholds_path,
@@ -530,12 +542,15 @@ def apply_fusion_weights(
 
     logger.info(
         "Fusion weights updated: audio %s→%s visual %s→%s",
-        previous["audio"], audio_weight,
-        previous["visual"], visual_weight,
+        previous["audio"],
+        audio_weight,
+        previous["visual"],
+        visual_weight,
     )
 
     return {
-        "success": True, "dry_run": False,
+        "success": True,
+        "dry_run": False,
         "previous": previous,
         "applied": {"audio": audio_weight, "visual": visual_weight},
         "path": thresholds_path,

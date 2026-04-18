@@ -308,11 +308,14 @@ class TestToolExecutor:
 
     def test_log_analyst_decision_writes_file(self, tmp_path: Path) -> None:
         ex = self._make_executor(tmp_path)
-        result = ex.execute("log_analyst_decision", {
-            "reasoning": "Nothing notable.",
-            "actions_taken": [],
-            "observations_summary": "3 detections in last hour.",
-        })
+        result = ex.execute(
+            "log_analyst_decision",
+            {
+                "reasoning": "Nothing notable.",
+                "actions_taken": [],
+                "observations_summary": "3 detections in last hour.",
+            },
+        )
         assert result["success"] is True
         dec_path = tmp_path / "decisions.jsonl"
         assert dec_path.exists()

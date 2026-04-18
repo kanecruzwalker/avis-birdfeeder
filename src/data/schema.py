@@ -172,7 +172,7 @@ class BirdObservation(BaseModel):
     )
 
     detection_mode: str = Field(
-        default = "fixed_crop",
+        default="fixed_crop",
         description=(
             "Crop strategy active when this observation was made. "
             "'fixed_crop' = static ROI. 'yolo' = YOLOv8s bounding box. "

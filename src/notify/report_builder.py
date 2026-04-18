@@ -135,9 +135,7 @@ class DailySummaryReport:
 
         if self.species:
             lines.append("## Species Detected")
-            lines.append(
-                "| Species | Count | Mean Conf | Max Conf | First Seen | Mode Breakdown |"
-            )
+            lines.append("| Species | Count | Mean Conf | Max Conf | First Seen | Mode Breakdown |")
             lines.append("|---------|-------|-----------|----------|------------|----------------|")
             for s in self.species:
                 first = s.first_seen.strftime("%H:%M")
@@ -306,7 +304,9 @@ class ReportBuilder:
             Malformed lines are skipped with a warning.
         """
         if not self.observations_path.exists():
-            logger.debug("Observations log not found at %s — returning empty.", self.observations_path)
+            logger.debug(
+                "Observations log not found at %s — returning empty.", self.observations_path
+            )
             return []
 
         results = []

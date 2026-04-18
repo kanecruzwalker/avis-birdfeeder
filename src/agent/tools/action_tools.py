@@ -78,7 +78,9 @@ def switch_detection_mode(
 
     logger.info(
         "Agent switched detection mode: %s → %s | reason: %s",
-        previous, new_mode, reason,
+        previous,
+        new_mode,
+        reason,
     )
 
     return {
@@ -122,10 +124,7 @@ def generate_daily_report(
     from src.notify.report_builder import ReportBuilder  # noqa: PLC0415
 
     try:
-        target_date = (
-            _date.fromisoformat(for_date) if for_date
-            else datetime.now(UTC).date()
-        )
+        target_date = _date.fromisoformat(for_date) if for_date else datetime.now(UTC).date()
         builder = ReportBuilder(observations_path=observations_path)
         report = builder.build_daily_summary(for_date=target_date)
         md_path, json_path = builder.write_daily_summary(

@@ -63,8 +63,14 @@ TOOL_SCHEMAS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "hours": {"type": "number", "description": "How many hours back to look. Default 1.0."},
-                "max_results": {"type": "integer", "description": "Max detections to return. Default 50."},
+                "hours": {
+                    "type": "number",
+                    "description": "How many hours back to look. Default 1.0.",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Max detections to return. Default 50.",
+                },
             },
             "required": [],
         },
@@ -92,7 +98,10 @@ TOOL_SCHEMAS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "species_code": {"type": "string", "description": "4-letter AOU code, e.g. 'HOFI'."},
+                "species_code": {
+                    "type": "string",
+                    "description": "4-letter AOU code, e.g. 'HOFI'.",
+                },
                 "days": {"type": "number", "description": "Days back to search. Default 7."},
             },
             "required": ["species_code"],
@@ -107,7 +116,10 @@ TOOL_SCHEMAS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "n": {"type": "integer", "description": "How many top species to return. Default 5."},
+                "n": {
+                    "type": "integer",
+                    "description": "How many top species to return. Default 5.",
+                },
                 "hours": {"type": "number", "description": "Time window in hours. Default 24.0."},
             },
             "required": [],
@@ -123,7 +135,10 @@ TOOL_SCHEMAS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "comparison_days": {"type": "integer", "description": "Days to compare for trend. Default 3."},
+                "comparison_days": {
+                    "type": "integer",
+                    "description": "Days to compare for trend. Default 3.",
+                },
             },
             "required": [],
         },
@@ -145,7 +160,11 @@ TOOL_SCHEMAS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "new_mode": {"type": "string", "enum": ["fixed_crop", "yolo"], "description": "Mode to switch to."},
+                "new_mode": {
+                    "type": "string",
+                    "enum": ["fixed_crop", "yolo"],
+                    "description": "Mode to switch to.",
+                },
                 "reason": {"type": "string", "description": "Why you are switching modes."},
             },
             "required": ["new_mode", "reason"],
@@ -160,7 +179,10 @@ TOOL_SCHEMAS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "for_date": {"type": "string", "description": "ISO date 'YYYY-MM-DD'. Omit for today."},
+                "for_date": {
+                    "type": "string",
+                    "description": "ISO date 'YYYY-MM-DD'. Omit for today.",
+                },
             },
             "required": [],
         },
@@ -190,9 +212,19 @@ TOOL_SCHEMAS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "reasoning": {"type": "string", "description": "What you observed, concluded, and why."},
-                "actions_taken": {"type": "array", "items": {"type": "string"}, "description": "Action tools called this cycle."},
-                "observations_summary": {"type": "string", "description": "One-sentence summary of what was observed."},
+                "reasoning": {
+                    "type": "string",
+                    "description": "What you observed, concluded, and why.",
+                },
+                "actions_taken": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Action tools called this cycle.",
+                },
+                "observations_summary": {
+                    "type": "string",
+                    "description": "One-sentence summary of what was observed.",
+                },
             },
             "required": ["reasoning", "actions_taken", "observations_summary"],
         },

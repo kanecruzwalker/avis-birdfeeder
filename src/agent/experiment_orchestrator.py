@@ -208,11 +208,11 @@ class ExperimentOrchestrator:
                 analyst = BirdAnalystAgent.from_config(str(config_dir))
             except Exception as exc:
                 import logging as _log
+
                 _log.getLogger(__name__).warning("BirdAnalystAgent init failed: %s", exc)
 
         logger.info(
-            "ExperimentOrchestrator.from_config | config_dir=%s "
-            "window=%.0fmin ab_modes=%s",
+            "ExperimentOrchestrator.from_config | config_dir=%s " "window=%.0fmin ab_modes=%s",
             config_dir,
             window_minutes,
             ab_modes,
@@ -227,9 +227,7 @@ class ExperimentOrchestrator:
             startup_delay_seconds=startup_delay_seconds,
             push_window_summaries=push_window_summaries,
             daily_summaries_dir=str(daily_summaries_dir),
-            analyst = analyst,
-
-
+            analyst=analyst,
         )
 
     # ── Public interface ──────────────────────────────────────────────────────
@@ -289,7 +287,6 @@ class ExperimentOrchestrator:
         self._running = False
         self.agent.stop()
 
-
     # ── Internal loop tick ────────────────────────────────────────────────────
 
     def _run_cycle(self):
@@ -312,7 +309,7 @@ class ExperimentOrchestrator:
         if self.analyst is not None and self.analyst.llm_available:
             # ── LLM path ──────────────────────────────────────────────────────
             window_elapsed = (now - self._window_start).total_seconds() / 60
-            uptime = (now - self._boot_time).total_seconds() if hasattr(self, '_boot_time') else 0.0
+            uptime = (now - self._boot_time).total_seconds() if hasattr(self, "_boot_time") else 0.0
 
             decision = self.analyst.advise(
                 vision_capture=self.agent.vision_capture,
@@ -345,7 +342,6 @@ class ExperimentOrchestrator:
         # Agent detection loop always runs regardless of decision path
         self.agent._cycle()
 
-
     def _fallback_cycle(self, now):
         """
         Fixed-schedule fallback logic — runs when LLM is unavailable.
@@ -359,8 +355,6 @@ class ExperimentOrchestrator:
 
         if self._should_fire_daily_summary(now):
             self._fire_daily_summary(now)
-
-
 
     # ── A/B mode management ───────────────────────────────────────────────────
 

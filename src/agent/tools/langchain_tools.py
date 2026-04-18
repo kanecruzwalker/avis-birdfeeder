@@ -97,6 +97,7 @@ def build_langchain_tools(context: dict[str, Any]) -> list:
         from src.agent.tools.observation_tools import (  # noqa: PLC0415
             read_recent_observations as _fn,
         )
+
         result = _fn(observations_path=obs_path, hours=hours)
         return json.dumps(result)
 
@@ -110,6 +111,7 @@ def build_langchain_tools(context: dict[str, Any]) -> list:
         from src.agent.tools.observation_tools import (  # noqa: PLC0415
             get_detection_stats as _fn,
         )
+
         result = _fn(observations_path=obs_path, hours=hours)
         return json.dumps(result)
 
@@ -123,6 +125,7 @@ def build_langchain_tools(context: dict[str, Any]) -> list:
         from src.agent.tools.observation_tools import (  # noqa: PLC0415
             query_species_history as _fn,
         )
+
         result = _fn(observations_path=obs_path, species_code=species_code, days=days)
         return json.dumps(result)
 
@@ -134,6 +137,7 @@ def build_langchain_tools(context: dict[str, Any]) -> list:
         Returns species ranked by detection count with mean confidence.
         """
         from src.agent.tools.observation_tools import get_top_species as _fn  # noqa: PLC0415
+
         result = _fn(observations_path=obs_path, n=n, hours=hours)
         return json.dumps(result)
 
@@ -145,6 +149,7 @@ def build_langchain_tools(context: dict[str, Any]) -> list:
         Returns status: healthy, declining, or low — with reasoning.
         """
         from src.agent.tools.observation_tools import get_feeder_health as _fn  # noqa: PLC0415
+
         result = _fn(observations_path=obs_path, comparison_days=comparison_days)
         return json.dumps(result)
 
@@ -158,6 +163,7 @@ def build_langchain_tools(context: dict[str, Any]) -> list:
         low detection counts before raising feeder health concerns.
         """
         from src.agent.tools.system_tools import get_time_context as _fn  # noqa: PLC0415
+
         return json.dumps(_fn())
 
     # ── Calibration tools ─────────────────────────────────────────────────────
@@ -173,6 +179,7 @@ def build_langchain_tools(context: dict[str, Any]) -> list:
         from src.agent.tools.calibration_tools import (  # noqa: PLC0415
             run_fusion_weight_sweep as _fn,
         )
+
         result = _fn(observations_path=obs_path, hours=hours)
         return json.dumps(result)
 
@@ -186,6 +193,7 @@ def build_langchain_tools(context: dict[str, Any]) -> list:
         from src.agent.tools.calibration_tools import (  # noqa: PLC0415
             evaluate_detection_threshold as _fn,
         )
+
         result = _fn(observations_path=obs_path, hours=hours)
         return json.dumps(result)
 
@@ -200,6 +208,7 @@ def build_langchain_tools(context: dict[str, Any]) -> list:
         from src.agent.tools.calibration_tools import (  # noqa: PLC0415
             compare_model_backends as _fn,
         )
+
         result = _fn(observations_path=obs_path, hours=hours)
         return json.dumps(result)
 
@@ -213,6 +222,7 @@ def build_langchain_tools(context: dict[str, Any]) -> list:
         This immediately affects all subsequent detections.
         """
         from src.agent.tools.calibration_tools import apply_fusion_weights as _fn  # noqa: PLC0415
+
         result = _fn(
             audio_weight=audio_weight,
             visual_weight=visual_weight,
@@ -231,6 +241,7 @@ def build_langchain_tools(context: dict[str, Any]) -> list:
         Only switch when detection stats clearly favour the new mode.
         """
         from src.agent.tools.action_tools import switch_detection_mode as _fn  # noqa: PLC0415
+
         result = _fn(
             new_mode=new_mode,
             vision_capture=vision_capture,
@@ -247,6 +258,7 @@ def build_langchain_tools(context: dict[str, Any]) -> list:
         Returns the push-ready summary message.
         """
         from src.agent.tools.action_tools import generate_daily_report as _fn  # noqa: PLC0415
+
         result = _fn(
             observations_path=obs_path,
             daily_summaries_dir=summaries_dir,
@@ -263,6 +275,7 @@ def build_langchain_tools(context: dict[str, Any]) -> list:
         Keep messages under 200 characters for clean mobile display.
         """
         from src.agent.tools.action_tools import push_notification as _fn  # noqa: PLC0415
+
         result = _fn(message=message, notifier=notifier)
         return json.dumps(result)
 
@@ -280,6 +293,7 @@ def build_langchain_tools(context: dict[str, Any]) -> list:
         or 'none' if no actions were taken.
         """
         from src.agent.tools.action_tools import log_analyst_decision as _fn  # noqa: PLC0415
+
         actions_list = (
             [a.strip() for a in actions_taken.split(",") if a.strip()]
             if actions_taken and actions_taken.lower() != "none"

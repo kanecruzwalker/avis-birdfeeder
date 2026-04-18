@@ -48,8 +48,9 @@ def get_current_system_status(
         Flat dict describing current state — all values JSON serialisable.
     """
     uptime_hours = uptime_seconds / 3600
-    window_pct = (window_elapsed_minutes / window_total_minutes * 100
-                  if window_total_minutes > 0 else 0)
+    window_pct = (
+        window_elapsed_minutes / window_total_minutes * 100 if window_total_minutes > 0 else 0
+    )
 
     return {
         "current_detection_mode": current_mode,
@@ -63,7 +64,8 @@ def get_current_system_status(
             "species": last_detection_species,
             "confidence": last_detection_confidence,
             "minutes_ago": round(last_detection_minutes_ago, 1)
-            if last_detection_minutes_ago is not None else None,
+            if last_detection_minutes_ago is not None
+            else None,
         },
         "status": "running",
     }

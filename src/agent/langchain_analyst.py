@@ -83,6 +83,7 @@ _LANGGRAPH_AVAILABLE = False
 try:
     import langgraph  # type: ignore[import]  # noqa: F401
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage  # type: ignore
+
     _LANGGRAPH_AVAILABLE = True
 except ImportError:
     pass
@@ -184,9 +185,9 @@ class LangChainAnalyst:
         self.current_mode = current_mode
 
         # Three memory layers — initialised in _build_graph()
-        self._message_history: list = []      # Layer 1: conversation buffer
+        self._message_history: list = []  # Layer 1: conversation buffer
         self._entity_store: dict[str, Any] = {}  # Layer 2: named entities
-        self._tool_cache: dict[str, Any] = {}    # Layer 3: session tool cache
+        self._tool_cache: dict[str, Any] = {}  # Layer 3: session tool cache
 
         # LangGraph components — built lazily on first answer() call
         self._graph = None
@@ -199,7 +200,9 @@ class LangChainAnalyst:
 
         logger.info(
             "LangChainAnalyst initialised | provider=%s model=%s available=%s",
-            provider, model, self._available,
+            provider,
+            model,
+            self._available,
         )
 
     @classmethod
@@ -301,6 +304,7 @@ class LangChainAnalyst:
                 return None
             try:
                 from langchain_google_genai import ChatGoogleGenerativeAI  # type: ignore
+
                 return ChatGoogleGenerativeAI(
                     model=self.model_name,
                     temperature=self.temperature,
@@ -321,6 +325,7 @@ class LangChainAnalyst:
                 return None
             try:
                 from langchain_openai import ChatOpenAI  # type: ignore
+
                 return ChatOpenAI(
                     model=self.model_name or "gpt-4o-mini",
                     temperature=self.temperature,
@@ -338,6 +343,7 @@ class LangChainAnalyst:
                 return None
             try:
                 from langchain_anthropic import ChatAnthropic  # type: ignore
+
                 return ChatAnthropic(
                     model=self.model_name or "claude-sonnet-4-6",
                     temperature=self.temperature,
@@ -356,15 +362,18 @@ class LangChainAnalyst:
         Build the LangChain tool list with runtime context injected.
         """
         from src.agent.tools.langchain_tools import build_langchain_tools  # noqa: PLC0415
-        return build_langchain_tools({
-            "observations_path": self.observations_path,
-            "thresholds_path": self.thresholds_path,
-            "daily_summaries_dir": self.daily_summaries_dir,
-            "vision_capture": self.vision_capture,
-            "notifier": self.notifier,
-            "current_mode": self.current_mode,
-            "decisions_log_path": self.decisions_log_path,
-        })
+
+        return build_langchain_tools(
+            {
+                "observations_path": self.observations_path,
+                "thresholds_path": self.thresholds_path,
+                "daily_summaries_dir": self.daily_summaries_dir,
+                "vision_capture": self.vision_capture,
+                "notifier": self.notifier,
+                "current_mode": self.current_mode,
+                "decisions_log_path": self.decisions_log_path,
+            }
+        )
 
     def _build_graph(self) -> Any:
         """
@@ -514,7 +523,7 @@ class LangChainAnalyst:
 
         # ── Layer 1: build message list with history ──────────────────────
         # Keep last memory_window_k messages (window buffer)
-        windowed_history = self._message_history[-(self.memory_window_k * 2):]
+        windowed_history = self._message_history[-(self.memory_window_k * 2) :]
         messages = windowed_history + [HumanMessage(content=enriched_query)]
 
         # ── Layer 3: attach tool cache hint to query ──────────────────────
@@ -588,12 +597,15 @@ class LangChainAnalyst:
         Future: track user preferences, time ranges, locations.
         """
         import re  # noqa: PLC0415
+
         # Extract 4-letter uppercase species codes (AOU format)
-        codes = re.findall(r'\b[A-Z]{4}\b', query + " " + response)
+        codes = re.findall(r"\b[A-Z]{4}\b", query + " " + response)
 
         # Filter to known species codes (4 uppercase letters is not unique enough alone)
         # We accept any that look like AOU codes in the conversation context
-        plausible = [c for c in codes if c not in ("YOLO", "HTTP", "JSON", "NULL", "TRUE", "NONE", "WITH")]
+        plausible = [
+            c for c in codes if c not in ("YOLO", "HTTP", "JSON", "NULL", "TRUE", "NONE", "WITH")
+        ]
 
         if plausible:
             existing = self._entity_store.get("species_of_interest", [])
@@ -629,10 +641,13 @@ class LangChainAnalyst:
         is a future enhancement.
         """
         cacheable = {
-            "read_recent_observations", "get_top_species",
-            "get_detection_stats", "get_feeder_health",
+            "read_recent_observations",
+            "get_top_species",
+            "get_detection_stats",
+            "get_feeder_health",
         }
         from datetime import UTC, datetime  # noqa: PLC0415
+
         for tool_name in tools_called:
             if tool_name in cacheable:
                 self._tool_cache[tool_name] = datetime.now(UTC).isoformat()
@@ -653,9 +668,7 @@ class LangChainAnalyst:
         for msg in reversed(messages):
             # Look for AI messages that don't have tool calls (final response)
             if hasattr(msg, "content") and msg.content:
-                has_tool_calls = bool(
-                    getattr(msg, "tool_calls", None)
-                )
+                has_tool_calls = bool(getattr(msg, "tool_calls", None))
                 if not has_tool_calls and isinstance(msg.content, str):
                     return msg.content.strip()
         return "I was unable to generate a response."

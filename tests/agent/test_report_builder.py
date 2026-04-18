@@ -104,9 +104,7 @@ class TestReadObservations:
     def test_skips_malformed_json_line(self, tmp_path: Path) -> None:
         obs_path = tmp_path / "observations.jsonl"
         obs_path.write_text(
-            json.dumps(_obs("HOFI")) + "\n"
-            + "not valid json\n"
-            + json.dumps(_obs("MODO")) + "\n"
+            json.dumps(_obs("HOFI")) + "\n" + "not valid json\n" + json.dumps(_obs("MODO")) + "\n"
         )
         builder = ReportBuilder(observations_path=str(obs_path))
         result = builder._read_observations()
@@ -217,7 +215,11 @@ class TestBuildDailySummary:
 
     def test_detection_mode_counts(self, tmp_path: Path) -> None:
         obs = [
-            _obs("HOFI", detection_mode="fixed_crop", timestamp=datetime(2026, 4, 15, 10, 0, tzinfo=UTC)),
+            _obs(
+                "HOFI",
+                detection_mode="fixed_crop",
+                timestamp=datetime(2026, 4, 15, 10, 0, tzinfo=UTC),
+            ),
             _obs("HOFI", detection_mode="yolo", timestamp=datetime(2026, 4, 15, 11, 0, tzinfo=UTC)),
             _obs("MODO", detection_mode="yolo", timestamp=datetime(2026, 4, 15, 12, 0, tzinfo=UTC)),
         ]
@@ -227,8 +229,14 @@ class TestBuildDailySummary:
         assert report.detection_mode_counts["yolo"] == 2
 
     def test_modality_counting_fused(self, tmp_path: Path) -> None:
-        obs = [_obs("HOFI", has_audio=True, has_visual=True,
-                    timestamp=datetime(2026, 4, 15, 10, 0, tzinfo=UTC))]
+        obs = [
+            _obs(
+                "HOFI",
+                has_audio=True,
+                has_visual=True,
+                timestamp=datetime(2026, 4, 15, 10, 0, tzinfo=UTC),
+            )
+        ]
         builder = _make_builder(tmp_path, obs)
         report = builder.build_daily_summary(for_date=date(2026, 4, 15))
         assert report.fused_count == 1
@@ -236,16 +244,28 @@ class TestBuildDailySummary:
         assert report.visual_only_count == 0
 
     def test_modality_counting_audio_only(self, tmp_path: Path) -> None:
-        obs = [_obs("HOFI", has_audio=True, has_visual=False,
-                    timestamp=datetime(2026, 4, 15, 10, 0, tzinfo=UTC))]
+        obs = [
+            _obs(
+                "HOFI",
+                has_audio=True,
+                has_visual=False,
+                timestamp=datetime(2026, 4, 15, 10, 0, tzinfo=UTC),
+            )
+        ]
         builder = _make_builder(tmp_path, obs)
         report = builder.build_daily_summary(for_date=date(2026, 4, 15))
         assert report.audio_only_count == 1
         assert report.fused_count == 0
 
     def test_modality_counting_visual_only(self, tmp_path: Path) -> None:
-        obs = [_obs("HOFI", has_audio=False, has_visual=True,
-                    timestamp=datetime(2026, 4, 15, 10, 0, tzinfo=UTC))]
+        obs = [
+            _obs(
+                "HOFI",
+                has_audio=False,
+                has_visual=True,
+                timestamp=datetime(2026, 4, 15, 10, 0, tzinfo=UTC),
+            )
+        ]
         builder = _make_builder(tmp_path, obs)
         report = builder.build_daily_summary(for_date=date(2026, 4, 15))
         assert report.visual_only_count == 1
@@ -260,9 +280,19 @@ class TestBuildWindowReport:
         start = datetime(2026, 4, 15, 10, 0, tzinfo=UTC)
         end = datetime(2026, 4, 15, 10, 30, tzinfo=UTC)
         obs = [
-            _obs("HOFI", detection_mode="fixed_crop", timestamp=datetime(2026, 4, 15, 10, 5, tzinfo=UTC)),
-            _obs("MODO", detection_mode="yolo", timestamp=datetime(2026, 4, 15, 10, 10, tzinfo=UTC)),
-            _obs("BLPH", detection_mode="fixed_crop", timestamp=datetime(2026, 4, 15, 10, 20, tzinfo=UTC)),
+            _obs(
+                "HOFI",
+                detection_mode="fixed_crop",
+                timestamp=datetime(2026, 4, 15, 10, 5, tzinfo=UTC),
+            ),
+            _obs(
+                "MODO", detection_mode="yolo", timestamp=datetime(2026, 4, 15, 10, 10, tzinfo=UTC)
+            ),
+            _obs(
+                "BLPH",
+                detection_mode="fixed_crop",
+                timestamp=datetime(2026, 4, 15, 10, 20, tzinfo=UTC),
+            ),
         ]
         builder = _make_builder(tmp_path, obs)
         report = builder.build_window_report(mode="fixed_crop", window_start=start, window_end=end)
@@ -288,8 +318,16 @@ class TestBuildWindowReport:
         start = datetime(2026, 4, 15, 10, 0, tzinfo=UTC)
         end = datetime(2026, 4, 15, 10, 30, tzinfo=UTC)
         obs = [
-            _obs("HOFI", detection_mode="fixed_crop", timestamp=datetime(2026, 4, 15, 10, 5, tzinfo=UTC)),
-            _obs("MODO", detection_mode="fixed_crop", timestamp=datetime(2026, 4, 15, 10, 15, tzinfo=UTC)),
+            _obs(
+                "HOFI",
+                detection_mode="fixed_crop",
+                timestamp=datetime(2026, 4, 15, 10, 5, tzinfo=UTC),
+            ),
+            _obs(
+                "MODO",
+                detection_mode="fixed_crop",
+                timestamp=datetime(2026, 4, 15, 10, 15, tzinfo=UTC),
+            ),
         ]
         builder = _make_builder(tmp_path, obs)
         report = builder.build_window_report(mode="fixed_crop", window_start=start, window_end=end)
@@ -470,6 +508,7 @@ class TestWriteDailySummary:
 
     def test_json_is_parseable(self, tmp_path: Path) -> None:
         import json as _json
+
         builder = _make_builder(tmp_path, [])
         report = DailySummaryReport(
             report_date=date(2026, 4, 15),

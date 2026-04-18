@@ -85,15 +85,17 @@ def read_recent_observations(
                     if ts.tzinfo is None:
                         ts = ts.replace(tzinfo=UTC)
                     if ts >= since:
-                        detections.append({
-                            "species": obs.get("common_name", obs.get("species_code", "?")),
-                            "species_code": obs.get("species_code", "?"),
-                            "confidence": round(float(obs.get("fused_confidence", 0)), 3),
-                            "mode": obs.get("detection_mode", "fixed_crop"),
-                            "timestamp": ts.strftime("%H:%M:%S"),
-                            "has_audio": obs.get("audio_result") is not None,
-                            "has_visual": obs.get("visual_result") is not None,
-                        })
+                        detections.append(
+                            {
+                                "species": obs.get("common_name", obs.get("species_code", "?")),
+                                "species_code": obs.get("species_code", "?"),
+                                "confidence": round(float(obs.get("fused_confidence", 0)), 3),
+                                "mode": obs.get("detection_mode", "fixed_crop"),
+                                "timestamp": ts.strftime("%H:%M:%S"),
+                                "has_audio": obs.get("audio_result") is not None,
+                                "has_visual": obs.get("visual_result") is not None,
+                            }
+                        )
                 except Exception:
                     continue
 
@@ -146,9 +148,7 @@ def get_detection_stats(
     now = datetime.now(UTC)
     since = now - timedelta(hours=hours)
 
-    by_mode: dict[str, dict[str, list]] = defaultdict(lambda: {
-        "confidences": [], "species": set()
-    })
+    by_mode: dict[str, dict[str, list]] = defaultdict(lambda: {"confidences": [], "species": set()})
 
     if path.exists():
         with path.open() as f:
@@ -426,14 +426,17 @@ def get_feeder_health(
                 except Exception:
                     continue
 
-    daily_summary = sorted([
-        {
-            "date": day,
-            "count": len(confs),
-            "mean_conf": round(mean(confs), 3) if confs else 0.0,
-        }
-        for day, confs in daily_counts.items()
-    ], key=lambda x: x["date"])
+    daily_summary = sorted(
+        [
+            {
+                "date": day,
+                "count": len(confs),
+                "mean_conf": round(mean(confs), 3) if confs else 0.0,
+            }
+            for day, confs in daily_counts.items()
+        ],
+        key=lambda x: x["date"],
+    )
 
     counts = [d["count"] for d in daily_summary]
 
@@ -474,7 +477,9 @@ def get_feeder_health(
         status = "healthy"
         direction = "up"
         alert = None
-        reasoning = f"Detection activity increasing ({pct_change:.0f}%). Feeder appears well-stocked."
+        reasoning = (
+            f"Detection activity increasing ({pct_change:.0f}%). Feeder appears well-stocked."
+        )
     else:
         status = "healthy"
         direction = "flat"

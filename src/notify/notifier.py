@@ -222,6 +222,7 @@ class Notifier:
         self.push_attach_image = push_attach_image
         self.push_max_attachment_bytes = push_max_attachment_bytes
         self.push_enabled = enable_push
+
     @classmethod
     def from_config(cls, notify_config_path: str, paths_config_path: str) -> Notifier:
         """
@@ -541,6 +542,7 @@ class Notifier:
 
         if not user_key or not app_token:
             import logging
+
             logging.getLogger(__name__).warning(
                 "Pushover credentials not set — skipping plain-text push."
             )
@@ -548,10 +550,10 @@ class Notifier:
 
         payload = urllib.parse.urlencode(
             {
-                "token":   app_token,
-                "user":    user_key,
+                "token": app_token,
+                "user": user_key,
                 "message": message,
-                "title":   "Avis",
+                "title": "Avis",
             }
         ).encode()
 
@@ -564,11 +566,13 @@ class Notifier:
             with urllib.request.urlopen(req, timeout=10) as resp:
                 import json as _json
                 import logging
+
                 body = _json.loads(resp.read())
                 if body.get("status") != 1:
                     logging.getLogger(__name__).warning("Pushover returned status != 1: %s", body)
         except Exception as exc:  # noqa: BLE001
             import logging
+
             logging.getLogger(__name__).warning("_push_text failed: %s", exc)
 
     def _webhook(self, observation: BirdObservation) -> None:
