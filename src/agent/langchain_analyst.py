@@ -82,8 +82,11 @@ logger = logging.getLogger(__name__)
 _LANGGRAPH_AVAILABLE = False
 try:
     import langgraph  # type: ignore[import]  # noqa: F401
-    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage  # type: ignore
-
+    from langchain_core.messages import (  # type: ignore  # noqa: F401
+        AIMessage,
+        HumanMessage,
+        SystemMessage,
+    )
     _LANGGRAPH_AVAILABLE = True
 except ImportError:
     pass
