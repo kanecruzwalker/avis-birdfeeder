@@ -1,0 +1,20 @@
+species_code,common_name,precision,recall,f1,support
+DOWO,Downy Woodpecker,0.824,0.875,0.848,16
+YRUM,Yellow-rumped Warbler,0.196,0.701,0.307,87
+AMRO,American Robin,0.198,0.447,0.275,47
+ANHU,Anna's Hummingbird,0.409,0.2,0.269,45
+EUST,European Starling,0.169,0.328,0.223,61
+HOFI,House Finch,0.6,0.064,0.115,47
+WCSP,White-crowned Sparrow,0.114,0.083,0.096,48
+HOSP,House Sparrow,0.07,0.064,0.067,47
+LEGO,Lesser Goldfinch,0.1,0.026,0.041,39
+HOORI,Hooded Oriole,0.0,0.0,0.0,33
+MOCH,Northern Mockingbird,0.0,0.0,0.0,24
+MODO,Mourning Dove,0.0,0.0,0.0,24
+OCWA,Orange-crowned Warbler,0.0,0.0,0.0,23
+SOSP,Song Sparrow,0.0,0.0,0.0,12
+SPTO,Spotted Towhee,0.0,0.0,0.0,24
+WBNU,White-breasted Nuthatch,0.0,0.0,0.0,24
+BLPH,Black Phoebe,0.0,0.0,0.0,24
+WREN,House Wren,0.0,0.0,0.0,23
+AMCR,American Crow,0.0,0.0,0.0,24

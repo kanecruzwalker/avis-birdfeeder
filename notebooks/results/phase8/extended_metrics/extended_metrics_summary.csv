@@ -1,0 +1,5 @@
+modality,model,kappa,balanced_accuracy,roc_auc_macro,roc_auc_weighted,n_test,notes
+audio,KNN (MFCC),0.25,0.218,,,86,Phase 3 baseline re-evaluated
+audio,BirdNET pretrained,0.726,0.759,,,86,UNKNOWN predictions included as __UNKNOWN__
+visual,SVM (HOG+color),0.114,0.147,,,672,Phase 3 baseline; no probability estimates (probability=False)
+visual,Frozen EfficientNet+LogReg,0.925,0.928,0.997,0.997,672,ROC-AUC computed below; LogReg provides predict_proba()
