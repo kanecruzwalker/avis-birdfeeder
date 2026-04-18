@@ -170,6 +170,14 @@ evaluated against baselines. All training on laptop/Colab.
 - [x] `src/vision/hailo_detector.py` — HailoDetector, YOLOv8s on HAILO8L
 - [x] YOLO detect-then-classify pipeline wired into VisionCapture
 - [x] Shared VDevice — YOLO + EfficientNet both on NPU simultaneously
+- [x] BirdAnalystAgent — custom LLM tool-calling agent (Gemini)
+- [x] LangChainAnalyst — LangGraph agent with 3 memory layers
+- [x] ExperimentOrchestrator — autonomous Pi controller, systemd boot
+- [x] 14 shared calibration + observation tools
+- [x] agent_demo.ipynb — validated with live Gemini API calls on Pi
+- [ ] Mount cameras at feeder — tune feeder_crop
+- [ ] Phase 7 evaluation — held-out test set, confusion matrices, comparison table
+- [ ] Course report and slide deck
 
 ---
 

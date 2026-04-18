@@ -171,6 +171,15 @@ class BirdObservation(BaseModel):
         description="Local path to the captured audio clip, if saved.",
     )
 
+    detection_mode: str = Field(
+        default="fixed_crop",
+        description=(
+            "Crop strategy active when this observation was made. "
+            "'fixed_crop' = static ROI. 'yolo' = YOLOv8s bounding box. "
+            "Set by ExperimentOrchestrator for A/B analysis."
+        ),
+    )
+
     # ── Phase 6 stub fields — stereo depth and detection ─────────────────────
     # These fields are intentionally None/False in Phase 5. They exist now so
     # that Phase 6 (detection + stereo pipeline) requires zero schema changes.

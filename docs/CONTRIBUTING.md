@@ -71,3 +71,15 @@ If it's a number, a path, or a threshold — it belongs in `configs/`, not in so
 2. Pin to a specific version: `librosa==0.10.2`
 3. Add a comment above it explaining why it's needed
 4. Mention it in your PR description
+
+
+
+## LLM / Agentic Components
+
+The agentic layer (src/agent/tools/, BirdAnalystAgent, LangChainAnalyst,
+ExperimentOrchestrator) requires a GEMINI_API_KEY in .env to run the LLM paths.
+
+- All LLM calls degrade gracefully — no key = fallback to fixed schedule, no crash
+- Tests mock all LLM calls — no API key required to run the test suite
+- Cost: ~$0.004 per full notebook run, <$0.10/month Pi deployment at 30min intervals
+- Model: gemini-2.5-flash (set in configs/hardware.yaml llm.model)

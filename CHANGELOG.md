@@ -10,6 +10,54 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+### Phase 6+ — Agentic LLM Layer (PR #42 feat/agentic-llm-layer)
+
+#### Dual-agent architecture
+- `src/agent/bird_analyst_agent.py` — BirdAnalystAgent: custom Gemini tool-calling agent
+  via langchain-google-genai. advise() path called by orchestrator every 30min,
+  answer() path for reactive user queries. Every cycle logged to analyst_decisions.jsonl.
+  Graceful fallback: returns None when LLM unavailable, orchestrator falls back to
+  fixed schedule.
+- `src/agent/langchain_analyst.py` — LangChainAnalyst: LangGraph ReAct agent with
+  3 memory layers (conversation buffer K=10, entity store, session tool cache).
+  get_graph_diagram() returns Mermaid diagram of perceive→reason→act→memory state machine.
+- `src/agent/tools/` — 14 shared tools (framework-agnostic):
+  observation_tools.py (perceive), system_tools.py (perceive),
+  action_tools.py (act), calibration_tools.py (self-tune).
+  build_langchain_tools() adapter in langchain_tools.py injects runtime context.
+- `src/agent/experiment_orchestrator.py` — ExperimentOrchestrator: autonomous Pi
+  system controller. Boot notification, LLM advise() path, fixed-schedule fallback,
+  daily .md/.json summary dispatch. Entry point for systemd boot via main().
+- `src/notify/report_builder.py` — ReportBuilder: DailySummaryReport and
+  ExperimentWindowReport from observations.jsonl. Outputs .md and .json.
+- `src/notify/notifier.py` — added _push_text() for system-level plain-text push
+- `src/data/schema.py` — detection_mode field on BirdObservation for A/B tracking
+- `scripts/avis.service` — systemd unit for Pi boot autostart
+- `configs/hardware.yaml` — orchestrator: and llm: config blocks added
+- `requirements.txt` — langchain-core, langchain-google-genai, langgraph, langchain
+  (google-generativeai removed — protobuf conflict with tensorflow-cpu)
+
+#### Agent self-calibration
+- Calibration tools close the autonomous loop: agent observes declining confidence,
+  runs fusion weight sweep, applies better weights to thresholds.yaml autonomously.
+  No human intervention required.
+
+#### Hardware validation (Pi, April 17 2026)
+- timeout 60 python -m src.agent.experiment_orchestrator confirmed:
+  cameras open, Gemini called successfully, detection logged, autonomous feeder
+  alert pushed ("Feeder activity dropped 96% over 3 days")
+- LLM path: analyst=True | llm=True confirmed on Pi with gemini-2.5-flash
+
+#### Notebooks
+- notebooks/agent_demo.ipynb — presentation demo, USE_SYNTHETIC toggle,
+  both agents running with live LLM, calibration charts, memory state visible
+- notebooks/phase7_evaluation.ipynb — held-out test set evaluation scaffold
+
+### Test count
+- 575 passing, 6 deselected (hardware), CI green
+
+---
+
 ### Phase 6 — YOLO detection pipeline (PR #40)
 
 #### HailoDetector — YOLOv8s bird detection on HAILO8L

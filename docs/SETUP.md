@@ -5,6 +5,7 @@
 - Python 3.11 or higher
 - Git
 - (On Pi) Raspberry Pi OS OS Debian Trixie 64-bit (Python 3.13), Hailo drivers installed
+- Hailo AI HAT+ with yolov8s_h8l.hef pre-installed at /usr/share/hailo-models/
 
 ## Clone and Install
 
@@ -189,6 +190,17 @@ cp .env.example .env  # fill in PUSHOVER_USER_KEY and PUSHOVER_APP_TOKEN
 # Set push: true in configs/notify.yaml (do not commit)
 python -m src.agent.bird_agent
 ```
+
+# After git pull, restore local dev overrides:
+nano configs/hardware.yaml   # enabled: true, detection_mode: yolo, motion_threshold: 0.005
+nano configs/notify.yaml     # push: true
+nano configs/thresholds.yaml # threshold: 0.10 (testing) or 0.70 (production)
+
+# Or use the dev script:
+bash scripts/dev_config.sh
+
+
+
 # After mounting cameras, run this to verify field of view and tune feeder crop:
 python scripts/capture_test_frame.py
 # Images saved to data/captures/test/ — scp to laptop to view

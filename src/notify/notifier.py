@@ -221,6 +221,7 @@ class Notifier:
         self.webhook_auth_header = webhook_auth_header
         self.push_attach_image = push_attach_image
         self.push_max_attachment_bytes = push_max_attachment_bytes
+        self.push_enabled = enable_push
 
     @classmethod
     def from_config(cls, notify_config_path: str, paths_config_path: str) -> Notifier:
@@ -511,6 +512,68 @@ class Notifier:
 
         except Exception as exc:
             logger.error("Pushover push failed: %s", exc)
+
+    def _push_text(self, message: str) -> None:  # noqa: ANN001
+        """
+        Push a plain text message via Pushover.
+
+        Used by ExperimentOrchestrator for system-level notifications:
+        - Boot / "Avis is live" message
+        - A/B window summary after each mode rotation
+        - Daily species summary
+
+        Unlike _push(), this method does not format a BirdObservation.
+        The caller supplies the complete message string.
+
+        Falls back silently if credentials are missing or the request fails —
+        the orchestrator loop must never crash because of a push failure.
+
+        Args:
+        message: The notification body text. Keep under ~500 chars
+                 for clean display on Pushover mobile clients.
+        """
+        import os
+        import urllib.error
+        import urllib.parse
+        import urllib.request
+
+        user_key = os.getenv("PUSHOVER_USER_KEY", "")
+        app_token = os.getenv("PUSHOVER_APP_TOKEN", "")
+
+        if not user_key or not app_token:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Pushover credentials not set — skipping plain-text push."
+            )
+            return
+
+        payload = urllib.parse.urlencode(
+            {
+                "token": app_token,
+                "user": user_key,
+                "message": message,
+                "title": "Avis",
+            }
+        ).encode()
+
+        try:
+            req = urllib.request.Request(
+                "https://api.pushover.net/1/messages.json",
+                data=payload,
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                import json as _json
+                import logging
+
+                body = _json.loads(resp.read())
+                if body.get("status") != 1:
+                    logging.getLogger(__name__).warning("Pushover returned status != 1: %s", body)
+        except Exception as exc:  # noqa: BLE001
+            import logging
+
+            logging.getLogger(__name__).warning("_push_text failed: %s", exc)
 
     def _webhook(self, observation: BirdObservation) -> None:
         """
