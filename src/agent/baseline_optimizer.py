@@ -99,9 +99,9 @@ class BaselineOptimizer:
         self.max_trials = max_trials
         self.max_hours = max_hours
         logger.info(
-            "BaselineOptimizer initialized (stub) | modality=TBD "
-            "max_trials=%d max_hours=%.1f",
-            max_trials, max_hours,
+            "BaselineOptimizer initialized (stub) | modality=TBD " "max_trials=%d max_hours=%.1f",
+            max_trials,
+            max_hours,
         )
 
     @classmethod
