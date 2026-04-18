@@ -58,7 +58,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import yaml
@@ -135,6 +135,7 @@ class ExperimentOrchestrator:
         self.push_window_summaries = push_window_summaries
         self.daily_summaries_dir = Path(daily_summaries_dir)
         self.analyst = analyst
+        self._last_llm_call = datetime.now(UTC) - timedelta(minutes=self.window_minutes)
 
         self._running = False
 
@@ -307,39 +308,41 @@ class ExperimentOrchestrator:
         now = datetime.now(UTC)
 
         if self.analyst is not None and self.analyst.llm_available:
-            # ── LLM path ──────────────────────────────────────────────────────
-            window_elapsed = (now - self._window_start).total_seconds() / 60
-            uptime = (now - self._boot_time).total_seconds() if hasattr(self, "_boot_time") else 0.0
+            minutes_since_last_llm = (now - self._last_llm_call).total_seconds() / 60
+            if minutes_since_last_llm >= self.window_minutes:
+                self._last_llm_call = now
+                window_elapsed = (now - self._window_start).total_seconds() / 60
+                uptime = (
+                    (now - self._boot_time).total_seconds() if hasattr(self, "_boot_time") else 0.0
+                )
 
-            decision = self.analyst.advise(
-                vision_capture=self.agent.vision_capture,
-                notifier=self.agent.notifier,
-                current_mode=self.current_detection_mode(),
-                uptime_seconds=uptime,
-                window_elapsed_minutes=window_elapsed,
-                window_total_minutes=self.window_minutes,
-            )
+                decision = self.analyst.advise(
+                    vision_capture=self.agent.vision_capture,
+                    notifier=self.agent.notifier,
+                    current_mode=self.current_detection_mode(),
+                    uptime_seconds=uptime,
+                    window_elapsed_minutes=window_elapsed,
+                    window_total_minutes=self.window_minutes,
+                )
 
-            if decision is not None:
-                # Execute what the agent decided
-                if decision.switch_mode and decision.switch_mode != self.current_detection_mode():
-                    self._apply_detection_mode(decision.switch_mode)
-                    self._window_start = now  # reset window on LLM-driven switch
-
-                if decision.generate_report:
-                    self._fire_daily_summary(now)
-
-                if decision.push_message and decision.push_message != "[pushed by agent]":
-                    # Agent set a message but didn't call push_notification directly
-                    self._push_text(decision.push_message)
+                if decision is not None:
+                    if (
+                        decision.switch_mode
+                        and decision.switch_mode != self.current_detection_mode()
+                    ):
+                        self._apply_detection_mode(decision.switch_mode)
+                        self._window_start = now
+                    if decision.generate_report:
+                        self._fire_daily_summary(now)
+                    if decision.push_message and decision.push_message != "[pushed by agent]":
+                        self._push_text(decision.push_message)
+                else:
+                    self._fallback_cycle(now)
             else:
-                # LLM returned None this cycle — run fallback for this tick
                 self._fallback_cycle(now)
         else:
-            # ── Fallback path — fixed schedule ────────────────────────────────
             self._fallback_cycle(now)
 
-        # Agent detection loop always runs regardless of decision path
         self.agent._cycle()
 
     def _fallback_cycle(self, now):
