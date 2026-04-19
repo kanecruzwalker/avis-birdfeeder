@@ -439,7 +439,7 @@ class VisionCapture:
             cy : cy + ch,
             cx : cx + cw,
         ]
-        
+
         # ── Motion gate ───────────────────────────────────────────────────────
         motion_score, bg = self._compute_motion(fixed_crop, camera_index)
         self._update_background(fixed_crop, camera_index, bg)
