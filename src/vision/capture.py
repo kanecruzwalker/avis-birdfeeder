@@ -135,9 +135,13 @@ class VisionCapture:
         crop_y: int,
         crop_width: int,
         crop_height: int,
-        motion_threshold: float,
-        background_history: int,
-        output_dir: str | Path,
+        crop_x_cam1: int | None = None,
+        crop_y_cam1: int | None = None,
+        crop_width_cam1: int | None = None,
+        crop_height_cam1: int | None = None,
+        motion_threshold: float = 0.005,
+        background_history: int = 30,
+        output_dir: str | Path = "data/captures/images",
         detection_mode: str = DETECTION_MODE_FIXED_CROP,
         hailo_yolo_hef: str | None = None,
         yolo_score_threshold: float = 0.25,
@@ -182,6 +186,11 @@ class VisionCapture:
         self.crop_y = crop_y
         self.crop_width = crop_width
         self.crop_height = crop_height
+        # Per-camera crop overrides — fall back to shared crop if not set
+        self.crop_x_cam1 = crop_x_cam1 if crop_x_cam1 is not None else crop_x
+        self.crop_y_cam1 = crop_y_cam1 if crop_y_cam1 is not None else crop_y
+        self.crop_width_cam1 = crop_width_cam1 if crop_width_cam1 is not None else crop_width
+        self.crop_height_cam1 = crop_height_cam1 if crop_height_cam1 is not None else crop_height
         self.motion_threshold = motion_threshold
         self.background_history = background_history
         self.output_dir = Path(output_dir).resolve()
@@ -261,6 +270,8 @@ class VisionCapture:
 
         cam = hw["cameras"]
         crop = cam["feeder_crop"]
+        crop0 = cam.get("feeder_crop_cam0", crop)
+        crop1 = cam.get("feeder_crop_cam1", crop)
 
         # Read Hailo YOLO config
         hailo_cfg = hw.get("hailo", {})
@@ -276,10 +287,14 @@ class VisionCapture:
             capture_fps=cam["capture_fps"],
             classification_width=cam["classification_width"],
             classification_height=cam["classification_height"],
-            crop_x=crop["x"],
-            crop_y=crop["y"],
-            crop_width=crop["width"],
-            crop_height=crop["height"],
+            crop_x=crop0["x"],
+            crop_y=crop0["y"],
+            crop_width=crop0["width"],
+            crop_height=crop0["height"],
+            crop_x_cam1=crop1["x"],
+            crop_y_cam1=crop1["y"],
+            crop_width_cam1=crop1["width"],
+            crop_height_cam1=crop1["height"],
             motion_threshold=cam["motion_threshold"],
             background_history=cam["background_history"],
             output_dir=paths["captures"]["images"],
@@ -415,14 +430,16 @@ class VisionCapture:
         Returns:
             CaptureResult if frame passes motion gate, else None.
         """
-        # ── Apply feeder crop for motion gate ─────────────────────────────────
-        # Always use the fixed crop for motion detection — it's fast and
-        # the background model is calibrated to this region.
-        fixed_crop = raw_frame[
-            self.crop_y : self.crop_y + self.crop_height,
-            self.crop_x : self.crop_x + self.crop_width,
-        ]
+        cx = self.crop_x_cam1 if camera_index == self.secondary_index else self.crop_x
+        cy = self.crop_y_cam1 if camera_index == self.secondary_index else self.crop_y
+        cw = self.crop_width_cam1 if camera_index == self.secondary_index else self.crop_width
+        ch = self.crop_height_cam1 if camera_index == self.secondary_index else self.crop_height
 
+        fixed_crop = raw_frame[
+            cy : cy + ch,
+            cx : cx + cw,
+        ]
+        
         # ── Motion gate ───────────────────────────────────────────────────────
         motion_score, bg = self._compute_motion(fixed_crop, camera_index)
         self._update_background(fixed_crop, camera_index, bg)
