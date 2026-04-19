@@ -83,6 +83,24 @@ cameras:
     y: 232        # top edge of crop region (pixels from top of frame)
     width: 400    # crop width in pixels (400px → downsampled to 224px)
     height: 400   # crop height in pixels
+
+
+  # ── Per-camera crop overrides (optional) ──────────────────────────────────
+  # If present, these override feeder_crop for the respective camera.
+  # Useful when cameras are mounted at slightly different angles.
+  # If absent, both cameras use the shared feeder_crop values above.
+  # feeder_crop_cam0:
+  #   x: 540
+  #   y: 180
+  #   width: 600
+  #   height: 500
+  # feeder_crop_cam1:
+  #   x: 500
+  #   y: 180
+  #   width: 600
+  #   height: 500
+
+
  
   # ── Motion detection ──────────────────────────────────────────────────────
   # Minimum mean absolute pixel difference from background model to trigger
