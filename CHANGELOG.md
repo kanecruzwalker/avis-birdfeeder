@@ -10,6 +10,28 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+### Phase 8 — Live Deployment Tuning (feat/per-camera-crop)
+
+#### Per-camera crop override
+- `src/vision/capture.py` — added `crop_x_cam1`, `crop_y_cam1`,
+  `crop_width_cam1`, `crop_height_cam1` params to `__init__()` with
+  `None` defaults falling back to shared crop values. `from_config()`
+  reads optional `feeder_crop_cam0` and `feeder_crop_cam1` blocks from
+  `hardware.yaml`, falling back to shared `feeder_crop` if absent.
+  `_process_frame()` selects crop region by `camera_index` — cam0 uses
+  primary crop, cam1 uses override crop.
+- `configs/hardware.yaml` — added `feeder_crop_cam0` and
+  `feeder_crop_cam1` optional override blocks with comments. Deployed
+  values tuned during live calibration session 2026-04-19:
+  cam0 x:630, cam1 x:420, y:130, 700×580.
+- Backward compatible — existing deployments without per-camera keys
+  use shared `feeder_crop` unchanged.
+
+### Test count
+- TBD — existing capture tests pass, new per-camera tests needed
+
+---
+
 ### Phase 7 — Held-out Evaluation + Pi Autonomous Deployment (PR feat/phase7-evaluation)
 
 #### Final evaluation on held-out test set
