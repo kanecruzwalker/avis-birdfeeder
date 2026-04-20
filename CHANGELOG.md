@@ -10,6 +10,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+### Fixed (Phase 8)
+- **Hailo YOLO mode: fix `HAILO_STREAM_NOT_ACTIVATED(72)` on shared VDevice** — the shared Hailo VDevice created by `VisionCapture` for YOLO detection was instantiated without a scheduling algorithm. With the HailoRT 4.23.0 `InferModel` API, this causes every inference call to fail with `HAILO_STREAM_NOT_ACTIVATED(72)` and write zeros to the output buffer, masking all bird detections. The fix is to create the VDevice with `HailoSchedulingAlgorithm.ROUND_ROBIN`, matching the pattern already used in `src/vision/hailo_extractor.py` and `scripts/benchmark_hailo.py`. A new `_create_shared_vdevice()` helper in `src/vision/capture.py` centralizes this requirement so any future code needing a shared VDevice gets the correct configuration by default. Also removes a duplicated preprocessing block in `HailoDetector.detect()` that was a leftover from an earlier edit.
+
+---
+
 ### Phase 8 — Audio device lookup by name (fix/audio-device-lookup-by-name)
 
 #### Added
