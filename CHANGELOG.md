@@ -8,6 +8,68 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Phase 8 — Pi Tooling Recovery (fix/recover-pi-tooling)
+
+#### Recovered and versioned Pi deployment tooling
+- `pi.ps1` — Laptop-side PowerShell shortcuts for managing the deployed Pi
+  via SSH. Dot-source into any session with `. .\pi.ps1`. Functions:
+  `pi-ssh`, `pi-status`, `pi-logs`, `pi-logs-since [time]`, `pi-stop`,
+  `pi-start`, `pi-restart`, `pi-run [seconds]`, `pi-config-check`,
+  `pi-pull`, `pi-deploy`. Host is configurable via `$env:AVIS_PI_HOST`
+  with a fallback to the LAN mDNS hostname `birdfeeder01@birdfeeder.local`
+  — no hardcoded IP addresses in the repo.
+- `scripts/install_service.sh` — one-command Pi systemd setup. Previously
+  lived only on the Pi; now committed with executable bit preserved.
+- `docs/PI_DEPLOYMENT.md` — consolidated Pi deployment guide covering
+  first-time setup, laptop-side `pi.ps1` configuration, SSH key auth, the
+  config override model, daily workflow, and troubleshooting entries for
+  every issue we've hit during Phase 5–8 deployment (YAML corruption,
+  audio device shift, Hailo errors, mDNS resolution).
+- `docs/SETUP.md` — Pi Deployment section replaced with a pointer to
+  `PI_DEPLOYMENT.md` plus a quick-reference for the daily deploy command
+  and feeder crop tuning workflow. Removed stale `nano` instructions that
+  referenced incorrect YAML keys.
+
+#### Replaced `dev_config.sh` with Python-based override tool
+- `scripts/dev_config.py` — new Python rewrite using `yaml.safe_load` /
+  `yaml.safe_dump` to apply Pi-local config overrides by real key path.
+  Declarative `PI_OVERRIDES` list at the top of the file is the only thing
+  anyone needs to edit when overrides change. Backs up each config to
+  `configs/*.yaml.bak` before modifying, validates all configs parse
+  cleanly after application, and exits non-zero with a clear error message
+  on any failure. Idempotent: safe to run multiple times.
+- `scripts/dev_config.sh` — deleted. `pi-pull` now calls the Python script.
+- `.gitignore` — added `configs/*.yaml.bak` rule so auto-generated backups
+  never land in commits.
+
+#### Bugs fixed (silent failures in the old `dev_config.sh`)
+- `s/threshold: 0.70/threshold: 0.10/` never matched anything. The actual
+  key is `confidence_threshold`, not `threshold`. Every `git pull` on the
+  Pi had silently left the dispatch threshold at the committed default
+  of 0.70 rather than the 0.10 we thought was being applied. Observation
+  logs captured during this period reflect threshold 0.70, not 0.10.
+- `s/enabled: false/enabled: true/` matched broadly. It only affected
+  `hailo.enabled` because that was the only `enabled: false` in the file,
+  but any future config block with the same pattern would have been
+  silently flipped too. New tool targets the exact key path.
+- Per-camera crop overrides (`feeder_crop_cam0`, `feeder_crop_cam1`) were
+  not handled at all — the multi-line YAML block couldn't be managed with
+  sed. They had to be manually uncommented after every `git pull`. Now
+  baked in as structured override values.
+
+#### Verification status
+- Laptop-side: `dev_config.py` tested against committed `configs/*.yaml`
+  — all seven overrides applied cleanly, backups written, configs still
+  parse after application, `git checkout configs/` restores clean state.
+- `pi.ps1` loads without errors, banner prints, `pi-status` verified
+  end-to-end against deployed Pi (systemd `active (running)` confirmed,
+  live log tail rendered correctly).
+- Pi-side: `dev_config.py` hardware verification happens on first post-
+  merge pull. Old `dev_config.sh` remains on the Pi until that point.
+
+### Test count
+- No new tests in this PR (tooling-only change). Existing 578 still pass.
+
 ---
 
 ### Phase 8 — Live Deployment Tuning (feat/per-camera-crop)

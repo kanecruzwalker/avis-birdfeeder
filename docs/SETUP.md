@@ -134,10 +134,6 @@ This writes `models/label_map.json`, `models/audio_label_map.json`, and
 you only need to run this if you change the species list or retrain splits.
 ```
 
-**requirements.txt** — small typo, missing space before `#HOG`:
-```
-scikit-image==0.24.0       # HOG (Histogram of Oriented Gradients)...
-
 
 ## Generate Phase 5 Model Artifacts
 
@@ -156,51 +152,34 @@ This generates:
 These files are gitignored — run the notebook after cloning on any new machine.
 
 
-
 ## Pi Deployment
 
-The Pi runs Debian Trixie with Python 3.13 as system Python. A two-venv
-architecture is required due to a dependency conflict:
-- `picamera2` C extension is compiled for Python 3.13 only
-- `tflite_runtime` (required by BirdNET) has no Python 3.13 aarch64 wheel
+Full Pi deployment documentation — first-time setup, the laptop↔Pi workflow,
+config override model, and troubleshooting — lives in
+[docs/PI_DEPLOYMENT.md](PI_DEPLOYMENT.md).
 
-**Setup:**
-```bash
-# 1. Create main venv (Python 3.13)
-python3 -m venv /mnt/data/avis-venv
-source /mnt/data/avis-venv/bin/activate
-pip install -r requirements-pi.txt
+**Quick reference:**
 
-# 2. Expose system picamera2 to venv
-echo "/usr/lib/python3/dist-packages" > \
-  /mnt/data/avis-venv/lib/python3.13/site-packages/system-dist-packages.pth
+After first-time setup, the daily workflow is:
 
-# 3. Install pyenv and Python 3.11 for BirdNET subprocess
-curl https://pyenv.run | bash
-pyenv install 3.11.9
-/home/birdfeeder01/.pyenv/versions/3.11.9/bin/pip install \
-  pyyaml birdnetlib==0.9.0 tflite-runtime resampy librosa "numpy<2"
-
-# 4. Copy model artifacts
-mkdir -p models/visual
-# scp frozen_extractor.pt and sklearn_pipeline.pkl from laptop
-
-# 5. Configure and run
-cp .env.example .env  # fill in PUSHOVER_USER_KEY and PUSHOVER_APP_TOKEN
-# Set push: true in configs/notify.yaml (do not commit)
-python -m src.agent.bird_agent
+```powershell
+# On laptop, after merging new work to main:
+. .\pi.ps1
+pi-deploy        # pull + apply Pi overrides + restart + status
 ```
 
-# After git pull, restore local dev overrides:
-nano configs/hardware.yaml   # enabled: true, detection_mode: yolo, motion_threshold: 0.005
-nano configs/notify.yaml     # push: true
-nano configs/thresholds.yaml # threshold: 0.10 (testing) or 0.70 (production)
+After mounting or moving cameras, tune the feeder crop by capturing test
+frames on the Pi and viewing them on the laptop:
 
-# Or use the dev script:
-bash scripts/dev_config.sh
-
-
-
-# After mounting cameras, run this to verify field of view and tune feeder crop:
+```bash
+# On Pi:
 python scripts/capture_test_frame.py
-# Images saved to data/captures/test/ — scp to laptop to view
+```
+
+```powershell
+# On laptop:
+scp "birdfeeder01@birdfeeder.local:/mnt/data/avis-birdfeeder/data/captures/test/*.jpg" .\test_frames\
+```
+
+Adjust `cameras.feeder_crop_cam0` and `cameras.feeder_crop_cam1` values in
+`scripts/dev_config.py`, then re-run `pi-deploy`.
