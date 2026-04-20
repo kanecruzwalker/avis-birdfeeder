@@ -335,9 +335,6 @@ class HailoDetector:
 
         # ── Preprocess: resize to 640×640 uint8 ──────────────────────────────
         frame_640 = _resize_frame(frame, YOLO_INPUT_SIZE)
-
-        # ── Preprocess: resize to 640×640 uint8 ──────────────────────────────
-        frame_640 = _resize_frame(frame, YOLO_INPUT_SIZE)
         if frame_640.dtype != np.uint8:
             frame_640 = (frame_640 * 255).clip(0, 255).astype(np.uint8)
 
