@@ -15,8 +15,19 @@
  
 # ── Microphone ────────────────────────────────────────────────────────────────
 microphone:
-  # sounddevice device index — confirmed via sd.query_devices() on Pi
-  device_index: 1
+  # Preferred device lookup method: substring match against sounddevice
+  # device names. Robust to USB enumeration order changes across reboots.
+  # Set this to a distinctive fragment of the device name (verify on Pi
+  # with: python -c "import sounddevice; print(sounddevice.query_devices())").
+  # Leave unset (or empty string) to use device_index directly.
+  device_name: "USB PnP Audio Device"
+
+  # Fallback sounddevice device index used if device_name is unset or does
+  # not match any connected device. sounddevice enumeration is not stable
+  # across reboots — rely on device_name above for deployed hardware.
+  # Confirmed index 0 on the deployed Pi when the Fifine is the only audio
+  # device present. Different indices may be correct on other machines.
+  device_index: 0
  
   # Native sample rate reported by the device — no resampling needed
   # BirdNET expects 48000 Hz — this matches exactly
