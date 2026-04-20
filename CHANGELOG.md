@@ -8,6 +8,69 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+---
+
+### Phase 8 — Audio device lookup by name (fix/audio-device-lookup-by-name)
+
+#### Added
+- `src/audio/capture.py` — `AudioCapture` now resolves the sounddevice
+  index by name substring (`device_name`) with fallback to `device_index`.
+  Lookup happens lazily on first `capture_window()` call, cached for
+  subsequent captures. New private `_resolve_device_index()` method
+  encapsulates the full resolution chain with descriptive error messages
+  listing available devices when nothing resolves.
+- `configs/hardware.yaml` — new optional `microphone.device_name` key
+  (defaults to `"USB PnP Audio Device"`). Committed `device_index` changed
+  from `1` to `0` to match the deployed Pi hardware.
+- `tests/audio/test_capture.py` — new file, 32 unit tests across 7 classes
+  covering initialization, `from_config()`, device resolution (name match,
+  substring match, first match wins, input-channel filtering, fallback
+  paths, out-of-range errors), energy gate (below/above/near threshold),
+  WAV output (file creation, timestamp format, mono int16), device
+  resolution caching (resolves once, reuses cached index), and error
+  handling (sounddevice not installed, recording failures). Mocks
+  `sounddevice` via `patch.dict(sys.modules, ...)` since capture.py
+  imports the module lazily inside function bodies.
+
+#### Fixed
+- Fifine USB mic sounddevice index was non-deterministic across reboots
+  and USB replug events. On the April 19 deployment, the index silently
+  shifted from 1 to 0, causing every audio capture cycle to return
+  `audio_result: null` for hours before anyone noticed. PR-A's override
+  tool (`scripts/dev_config.py`) was a workaround — this PR is the
+  structural fix. Audio capture now works regardless of enumeration order,
+  across reboots, on different Pi hardware, and when new USB audio devices
+  (future webcams with built-in mics, etc.) are plugged in.
+
+#### Changed
+- `docs/PI_DEPLOYMENT.md` — "Microphone not capturing" troubleshooting
+  entry rewritten to reflect the new by-name resolution. Shows how to
+  read the new startup log lines (`Audio device resolved by name: ... → index N`)
+  and gives three decision branches based on what the logs report. Old entry
+  pointed at this PR as a future fix; new entry treats by-name lookup as
+  the default and documents how to diagnose remaining edge cases.
+
+#### Verification
+- Laptop-side: 610 tests passing, 6 deselected (hardware-only), full
+  suite including 32 new `test_capture.py` tests and unchanged existing
+  578 tests.
+- Pi-side: deferred to first post-merge `pi-deploy`. Will verify via
+  startup log line (`Audio device resolved by name: 'USB PnP Audio Device'
+  → index 0`) and continued RMS values in `pi-logs` confirming audio
+  capture unchanged from current production behavior.
+
+#### Follow-up — can be removed after this lands
+- The hand-edited `microphone.device_index: 0` on the Pi's local
+  `configs/hardware.yaml` is no longer needed — the committed default is
+  now `0`, and even if it weren't, the by-name lookup would find the
+  Fifine correctly.
+
+---
+
+### Phase 8 — Pi Tooling Recovery (fix/recover-pi-tooling)
+
+---
+
 ### Phase 8 — Pi Tooling Recovery (fix/recover-pi-tooling)
 
 #### Recovered and versioned Pi deployment tooling
