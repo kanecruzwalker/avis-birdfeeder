@@ -80,7 +80,7 @@ def _fake_sounddevice(
     else:
         # Default to 3 seconds of low-amplitude noise — below energy gate
         samples = 48000 * 3
-        default = (np.random.randn(samples, 1).astype(np.float32) * 0.001)
+        default = np.random.randn(samples, 1).astype(np.float32) * 0.001
         fake_sd.rec.return_value = rec_return if rec_return is not None else default
     return fake_sd
 
@@ -252,9 +252,7 @@ class TestResolveDeviceIndex:
         # Index 2 matches the name AND has inputs — chosen.
         assert idx == 2
 
-    def test_fallback_to_index_when_name_unset(
-        self, capture_no_name: AudioCapture
-    ) -> None:
+    def test_fallback_to_index_when_name_unset(self, capture_no_name: AudioCapture) -> None:
         devices = [
             {"name": "USB PnP Audio Device: Audio (hw:2,0)", "max_input_channels": 1},
             {"name": "Something Else", "max_input_channels": 1},
@@ -358,6 +356,7 @@ class TestCaptureWindowEnergyGate:
         with patch.dict(sys.modules, {"sounddevice": fake_sd}):
             result = capture.capture_window()
         assert result is None
+
 
 # ── capture_window — WAV output ───────────────────────────────────────────────
 
