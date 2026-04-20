@@ -315,23 +315,53 @@ python scripts/dev_config.py
 sudo systemctl restart avis
 ```
 
-### Microphone not capturing (audio_result: null for hours)
+### Microphone not capturing
 
-The Fifine USB mic's sounddevice index is non-deterministic across reboots.
-If audio cycles are silently failing, the device index may have shifted.
-Check:
+Audio capture resolves the sounddevice index by name (`microphone.device_name`
+in `hardware.yaml`) with fallback to `microphone.device_index`. On startup,
+the Avis service logs which resolution path was taken:
 
-```bash
-ssh birdfeeder01@birdfeeder.local
-source /mnt/data/avis-venv/bin/activate
-python -c "import sounddevice as sd; print(sd.query_devices())"
+or, if the name didn't match any device:
+
+**If audio is silently failing** (`audio_result: null` on every observation),
+check the startup logs first:
+
+```powershell
+pi-logs-since "5 min ago" | findstr /i "audio device"
 ```
 
-Find the "USB PnP Audio Device" or "Fifine" entry and note its index. If it
-doesn't match what's in `configs/hardware.yaml` under `microphone.device_index`,
-edit the config and restart the service.
+From the output, decide:
 
-Fix-by-name is scheduled for `fix/audio-device-lookup-by-name` (PR-B).
+- **No "Audio device resolved" line at all** → `AudioCapture` never initialized.
+  Check for an earlier exception in the service logs.
+- **"Falling back to device_index"** → the configured `device_name` substring
+  didn't match any connected device. List what sounddevice actually sees:
+
+```powershell
+  pi-ssh
+```
+  Then on the Pi:
+```bash
+  source /mnt/data/avis-venv/bin/activate
+  python -c "import sounddevice as sd; [print(i, d['name']) for i, d in enumerate(sd.query_devices())]"
+```
+
+  Update `microphone.device_name` in `hardware.yaml` to a distinctive
+  substring of the actual device name. Avoid matching on the volatile
+  `hw:X,Y` ALSA address — prefer the product description.
+
+- **"Resolved by name → index N" but no audio in logs afterwards** → sounddevice
+  found the device but recording is failing at runtime. Likely a USB disconnect
+  or permission issue. Check `dmesg` for USB errors and confirm the Pi user
+  has audio group membership:
+
+```bash
+  groups birdfeeder01
+  # should include: audio
+```
+
+After any config change, restart the service via `pi-restart` and re-check
+logs with `pi-logs`.
 
 ### Hailo errors on startup
 
