@@ -74,3 +74,6 @@ Thumbs.db
 
 # pyenv local Python version pin — Pi-specific, not for dev machines
 .python-version
+
+# ── Config override backups (created by scripts/dev_config.py) ────────────────
+configs/*.yaml.bak
