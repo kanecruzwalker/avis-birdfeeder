@@ -10,6 +10,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+### Fixed (Phase 8)
+- **Hailo YOLO mode: fix `HAILO_STREAM_NOT_ACTIVATED(72)` on shared VDevice** — the shared Hailo VDevice created by `VisionCapture` for YOLO detection was instantiated without a scheduling algorithm. With the HailoRT 4.23.0 `InferModel` API, this causes every inference call to fail with `HAILO_STREAM_NOT_ACTIVATED(72)` and write zeros to the output buffer, masking all bird detections. The fix is to create the VDevice with `HailoSchedulingAlgorithm.ROUND_ROBIN`, matching the pattern already used in `src/vision/hailo_extractor.py` and `scripts/benchmark_hailo.py`. A new `_create_shared_vdevice()` helper in `src/vision/capture.py` centralizes this requirement so any future code needing a shared VDevice gets the correct configuration by default. Also removes a duplicated preprocessing block in `HailoDetector.detect()` that was a leftover from an earlier edit.
+- **Hailo YOLO mode: remove manual `activate()`/`deactivate()` under scheduler** — follow-up to the ROUND_ROBIN fix above. Once the VDevice switched to scheduler-managed activation, the manual `self._configured.activate()` call in `HailoDetector.open()` started raising `HAILO_INVALID_OPERATION(6)` with the message "Manually activate a core-op is not allowed when the core-op scheduler is active!". Under a ROUND_ROBIN scheduler the chip handles activation and deactivation at inference time, so `HailoDetector.open()` now only configures the model and `HailoDetector.close()` releases the reference without calling `deactivate()`. This matches the existing pattern in `HailoVisualExtractor`. Reproduced on Pi hardware: prior error was swallowed by the detector's try/except and the service fell back to `fixed_crop` silently, so YOLO mode appeared to load but immediately deactivated itself every cycle.
+
+---
+
 ### Phase 8 — Audio device lookup by name (fix/audio-device-lookup-by-name)
 
 #### Added

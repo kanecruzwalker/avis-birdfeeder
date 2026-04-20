@@ -61,16 +61,53 @@ import numpy as np
 import yaml
 
 try:
-    from hailo_platform import VDevice as _HailoVDevice  # type: ignore[import]
+    from hailo_platform import (  # type: ignore[import]
+        HailoSchedulingAlgorithm as _HailoSchedulingAlgorithm,
+    )
+    from hailo_platform import (
+        VDevice as _HailoVDevice,
+    )
 
     HAILO_AVAILABLE = True
 except ImportError:
     HAILO_AVAILABLE = False
     _HailoVDevice = None  # type: ignore[assignment]
+    _HailoSchedulingAlgorithm = None  # type: ignore[assignment]
+
 
 from src.vision.preprocess import preprocess_frame
 
 logger = logging.getLogger(__name__)
+
+
+def _create_shared_vdevice() -> object:
+    """
+    Create a Hailo VDevice configured with the ROUND_ROBIN scheduler.
+
+    The ROUND_ROBIN scheduling algorithm is REQUIRED for the modern HailoRT
+    InferModel API (HailoRT 4.23.0). Without it, inference calls return
+    HAILO_STREAM_NOT_ACTIVATED(72) and the output buffer is filled with zeros.
+
+    This requirement is documented in Hailo's HailoRT python user guide and
+    in our own src/vision/hailo_extractor.py module notes.
+
+    When multiple models share one VDevice (YOLO detector + EfficientNet
+    extractor), ROUND_ROBIN lets the chip's scheduler switch between them
+    automatically rather than requiring manual activate/deactivate around
+    each inference call.
+
+    Returns:
+        Configured VDevice instance.
+
+    Raises:
+        RuntimeError: If hailo_platform is not available.
+    """
+    if not HAILO_AVAILABLE:
+        raise RuntimeError("hailo_platform not available — cannot create shared VDevice.")
+    params = _HailoVDevice.create_params()
+    params.scheduling_algorithm = _HailoSchedulingAlgorithm.ROUND_ROBIN
+    return _HailoVDevice(params)
+
 
 # Detection mode constants
 DETECTION_MODE_FIXED_CROP = "fixed_crop"
@@ -216,14 +253,14 @@ class VisionCapture:
         self._detector = None
         self._detector_open = False
 
-        # Shared Hailo VDevice — created eagerly if YOLO mode, reused by VisualClassifier
+        # Shared Hailo VDevice — created eagerly if YOLO mode, reused by VisualClassifier.
+        # ROUND_ROBIN scheduling is required for the InferModel API (HailoRT 4.23.0)
+        # when multiple models share a VDevice — see _create_shared_vdevice() docstring.
         self._shared_vdevice = None
         if self.detection_mode == DETECTION_MODE_YOLO and self.hailo_yolo_hef:
             try:
-                from hailo_platform import VDevice  # noqa: PLC0415
-
-                self._shared_vdevice = VDevice()
-                logger.info("Shared Hailo VDevice created (YOLO mode).")
+                self._shared_vdevice = _create_shared_vdevice()
+                logger.info("Shared Hailo VDevice created (YOLO mode, ROUND_ROBIN scheduler).")
             except Exception as exc:
                 logger.warning("Could not create shared VDevice: %s", exc)
 
@@ -358,10 +395,8 @@ class VisionCapture:
             from src.vision.hailo_detector import HailoDetector
 
             if self._shared_vdevice is None and HAILO_AVAILABLE:
-                from hailo_platform import VDevice as _VD  # noqa: PLC0415
-
-                self._shared_vdevice = _VD()
-                logger.info("Shared Hailo VDevice created.")
+                self._shared_vdevice = _create_shared_vdevice()
+                logger.info("Shared Hailo VDevice created (lazy, ROUND_ROBIN scheduler).")
 
             self._detector = HailoDetector(
                 hef_path=self.hailo_yolo_hef,
