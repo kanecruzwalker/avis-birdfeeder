@@ -279,8 +279,15 @@ class HailoDetector:
         self._out_buf_size = YOLO_NUM_CLASSES * (
             4 + self.max_proposals_per_class * BYTES_PER_DETECTION
         )
+        # NOTE: Do NOT call .activate() on the configured network group.
+        # The shared VDevice uses HailoSchedulingAlgorithm.ROUND_ROBIN
+        # (see src.vision.capture._create_shared_vdevice), which means the
+        # chip's core-op scheduler handles activation automatically at
+        # inference time. Calling .activate() manually raises
+        # HAILO_INVALID_OPERATION(6) "Manually activate a core-op is not
+        # allowed when the core-op scheduler is active!".
+        # This matches the pattern in src/vision/hailo_extractor.py.
         self._configured = model.configure()
-        self._configured.activate()
         self.is_open = True
 
         logger.info(
@@ -291,11 +298,15 @@ class HailoDetector:
     def close(self) -> None:
         """
         Release Hailo resources. Safe to call multiple times.
+
+        The scheduler handles deactivation automatically when the configured
+        network group is garbage-collected, so we do not call .deactivate().
+        Calling it manually under a ROUND_ROBIN scheduler raises
+        HAILO_INVALID_OPERATION(6).
         """
         if not self.is_open:
             return
         if self._configured is not None:
-            self._configured.deactivate()
             self._configured = None
 
         if self._owns_vdevice:
