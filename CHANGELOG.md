@@ -10,6 +10,100 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+### Phase 8 — Notifier Network Resilience (PR #49 fix/notifier-timeout-and-retry)
+
+#### Fixed
+- **Pushover push failures on marginal WiFi** — initial notifier used a fixed
+  5-second timeout in `_push()` with no retry logic. Field testing on April 20
+  with home WiFi at -72 dBm signal and 11-22 KB/s measured upload speeds
+  produced a 100% failure rate on image-attached pushes: at ~15 KB/s, a 500KB
+  capture frame takes ~35 seconds to upload, but the 5s timeout fires first.
+  Between 17:19 and 17:44 PDT, 14 consecutive push notifications failed with
+  `urlopen error The write operation timed out` — including the peak HOFI
+  detection at 80.7% fused confidence during a 10-minute feeder visit. All 14
+  observations were correctly classified and persisted to `observations.jsonl`
+  with valid `image_path` entries pointing to captured frames on disk — only
+  the network upload to Pushover failed. Text-only pushes (`_push_text` at
+  ~500 bytes with a 10s timeout) succeeded intermittently, masking the
+  problem in casual use.
+
+#### Added
+- `src/notify/notifier.py` — new private `_post_to_pushover(data, content_type, *, context) -> bool`
+  helper method used by both `_push()` and `_push_text()`. Features:
+  - **Payload-scaled timeout**: `timeout = base + (payload_kb * per_kb_multiplier)`.
+    Default 10s base + 0.1s/KB yields 60s for 500KB images, 10s for small
+    text pushes. Ratio targets a conservative 10 KB/s upload floor.
+  - **Retry with exponential backoff**: 3 attempts by default, spacing
+    `backoff * 2^(attempt-1)` seconds between them — 2s / 4s / 8s at
+    default base=2.0.
+  - **Failure-mode discrimination**: retries on transient network errors
+    (`OSError`, `urllib.error.URLError`, `TimeoutError`). Does NOT retry
+    on Pushover API-level rejections (`status != 1`) — those won't recover
+    on retry and would just hammer the API.
+  - **Observability**: each attempt logs distinct lines. Success logs
+    payload size, timeout used, and retry count when succeeded on retry ≥ 2.
+- `src/notify/notifier.py` — four new constructor parameters with defaults:
+  `push_base_timeout_seconds: float = 10.0`, `push_per_kb_timeout_seconds: float = 0.1`,
+  `push_max_attempts: int = 3`, `push_retry_backoff_seconds: float = 2.0`.
+  Stored as `self.` attributes and consumed by the helper.
+- `configs/notify.yaml` — new `push.network` block with all four knobs and
+  extensive comments explaining payload scaling, retry semantics, and
+  failure-mode discrimination. `from_config()` reads the block with defaults.
+- `tests/notify/test_notifier.py` — new `TestNetworkResilience` class with
+  6 tests covering: timeout-scales-with-payload-size, retries-on-timeout,
+  success-after-retry, no-retry-on-API-rejection, exponential-backoff-timing,
+  end-to-end `_push()` with image attachment recovers from transient failure.
+
+#### Changed
+- `src/notify/notifier.py` — `_push()` and `_push_text()` refactored to call
+  `_post_to_pushover()` instead of maintaining duplicate inline
+  `urllib.request.urlopen(...)` blocks. Removes ~40 lines of duplicated
+  error handling; both push paths now share identical resilience mechanics.
+- `src/notify/notifier.py` — ruff auto-fix: `socket.timeout` → `TimeoutError`
+  alias (UP041) in the exception handler tuple.
+
+#### Verification
+- Laptop-side: 71 tests in `tests/notify/test_notifier.py` (65 existing + 6
+  new), 616 tests across full suite, 0 failures, 0 new warnings. CI green.
+- Pi-side (April 20 19:14 PDT deploy):
+  - Startup text push delivered: `Pushover push sent: system text push | 0.2KB, timeout=10.0s`
+  - Production image-push validation with threshold temporarily dropped to
+    `0.005` to force dispatches: **5 consecutive 520KB image pushes succeeded
+    in 52 seconds** (19:24:22 AMCR, 19:24:31 HOFI, 19:24:40 WBNU, 19:25:09
+    AMCR, 19:25:14 WBNU), all with `timeout=62.3s` scaled payload. Zero
+    retries fired, meaning first-attempt uploads completed within budget on
+    the same WiFi that had 14 consecutive failures 4 hours earlier.
+  - Threshold reverted to 0.2 and service confirmed active.
+- Config merge conflict between Pi-local `channels.push: true` override and
+  committed `push.network` block was resolved manually via `nano` (stash →
+  pull → stash pop → resolve markers → `git stash drop`). YAML re-validated
+  with `python -c "import yaml; yaml.safe_load(...)"` before restart.
+
+#### Backward compatibility
+- All new constructor parameters have defaults → existing `Notifier(...)`
+  callers unchanged.
+- `push.network` block is optional in `notify.yaml` → existing deployments
+  without it use constructor defaults.
+- No public API changes visible outside the notifier module.
+
+#### Follow-ups opened (future PRs, not blocking)
+- Config drift pattern: any PR that structurally changes `notify.yaml` /
+  `hardware.yaml` / `thresholds.yaml` will conflict with Pi-local overrides.
+  `scripts/dev_config.py` handles re-applying overrides after a clean pull
+  but does not resolve merge conflicts. Future option: `configs/*.local.yaml`
+  overlay pattern, gitignored, merged at `from_config()` load time.
+- Add YAML-validation step to `pi-deploy` shortcut (run `yaml.safe_load`
+  before `systemctl restart`) — would have caught the merge-marker
+  corruption in 1s instead of a 30s restart-loop.
+- Pi-deploy observations expected overnight: first "succeeded on attempt 2/3"
+  line will confirm the retry logic engaging (rather than just the scaled
+  timeout carrying everything).
+
+### Test count
+- 616 passing, 6 deselected (hardware), CI green
+
+---
+
 ### Fixed (Phase 8)
 - **Hailo YOLO mode: fix `HAILO_STREAM_NOT_ACTIVATED(72)` on shared VDevice** — the shared Hailo VDevice created by `VisionCapture` for YOLO detection was instantiated without a scheduling algorithm. With the HailoRT 4.23.0 `InferModel` API, this causes every inference call to fail with `HAILO_STREAM_NOT_ACTIVATED(72)` and write zeros to the output buffer, masking all bird detections. The fix is to create the VDevice with `HailoSchedulingAlgorithm.ROUND_ROBIN`, matching the pattern already used in `src/vision/hailo_extractor.py` and `scripts/benchmark_hailo.py`. A new `_create_shared_vdevice()` helper in `src/vision/capture.py` centralizes this requirement so any future code needing a shared VDevice gets the correct configuration by default. Also removes a duplicated preprocessing block in `HailoDetector.detect()` that was a leftover from an earlier edit.
 - **Hailo YOLO mode: remove manual `activate()`/`deactivate()` under scheduler** — follow-up to the ROUND_ROBIN fix above. Once the VDevice switched to scheduler-managed activation, the manual `self._configured.activate()` call in `HailoDetector.open()` started raising `HAILO_INVALID_OPERATION(6)` with the message "Manually activate a core-op is not allowed when the core-op scheduler is active!". Under a ROUND_ROBIN scheduler the chip handles activation and deactivation at inference time, so `HailoDetector.open()` now only configures the model and `HailoDetector.close()` releases the reference without calling `deactivate()`. This matches the existing pattern in `HailoVisualExtractor`. Reproduced on Pi hardware: prior error was swallowed by the detector's try/except and the service fell back to `fixed_crop` silently, so YOLO mode appeared to load but immediately deactivated itself every cycle.
