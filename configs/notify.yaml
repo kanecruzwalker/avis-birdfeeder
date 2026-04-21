@@ -65,6 +65,27 @@ push:
   # Crop frames at 400x400 PNG are typically 80-200KB — well within this limit.
   max_attachment_bytes: 2500000
 
+  # ── Network resilience (PR #49) ─────────────────────────────────────────
+  # Handles slow / marginal connections (weak WiFi, cellular, residential
+  # broadband under load) without losing notifications to transient failures.
+  #
+  # Timeout is computed per-request as:
+  #     timeout = base_timeout_seconds + (payload_kb * per_kb_timeout_seconds)
+  #
+  # Defaults below handle upload speeds as low as ~10 KB/s, enough for
+  # marginal WiFi at -70 dBm. A 500KB image push gets 60s total timeout;
+  # a small text push gets ~10s. On fast networks (fiber, 5GHz WiFi) you
+  # can tighten these; on very slow connections, loosen further.
+  #
+  # Retries fire on network errors (timeout, connection reset, DNS).
+  # API-level rejections (bad credentials, rate limit) do NOT retry —
+  # those won't recover and would just hammer the API.
+  network:
+    base_timeout_seconds: 10.0        # minimum timeout for any push
+    per_kb_timeout_seconds: 0.1       # additional timeout per KB of payload
+    max_attempts: 3                   # total attempts including first try
+    retry_backoff_seconds: 2.0        # base backoff; exponential 2→4→8s
+
 # ── Webhook configuration (Phase 6+) ─────────────────────────────────────────
 # Only read when channels.webhook is true.
 # Design intent: when a backend is built, point webhook.url at your
