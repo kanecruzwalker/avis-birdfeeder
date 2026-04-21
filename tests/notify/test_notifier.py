@@ -483,6 +483,172 @@ class TestNotifierPushAttachment:
         assert b"image/png" in req.data
 
 
+# ── Network resilience (timeout scaling + retry) ──────────────────────────────
+
+
+class TestNetworkResilience:
+    """
+    Tests for _post_to_pushover: payload-scaled timeouts and retry-with-backoff.
+
+    These tests validate the fix for edge-deployment network issues. The
+    original notifier used a fixed 5-second timeout and no retries, which
+    produced 100% failure rate on marginal WiFi (-70 dBm or worse) when
+    attaching ~500KB image frames. Field-tested on April 20 2026 with 14
+    consecutive push failures, all of which would have succeeded with these
+    resilience mechanics in place.
+    """
+
+    @pytest.fixture(autouse=True)
+    def set_credentials(self, monkeypatch):
+        """Inject valid Pushover credentials for all resilience tests."""
+        monkeypatch.setenv("PUSHOVER_USER_KEY", "test_user_key")
+        monkeypatch.setenv("PUSHOVER_APP_TOKEN", "test_app_token")
+
+    def _mock_success_response(self) -> MagicMock:
+        mock = MagicMock()
+        mock.read.return_value = b'{"status": 1}'
+        mock.__enter__ = lambda s: s
+        mock.__exit__ = MagicMock(return_value=False)
+        return mock
+
+    def test_timeout_scales_with_payload_size(self, tmp_path: Path) -> None:
+        """
+        Larger payloads get proportionally longer timeouts.
+        500KB image with base=10s, per_kb=0.1s → ~60s total timeout.
+        """
+        n = _make_notifier(
+            tmp_path,
+            enable_push=True,
+            push_base_timeout_seconds=10.0,
+            push_per_kb_timeout_seconds=0.1,
+        )
+        with patch("urllib.request.urlopen", return_value=self._mock_success_response()) as mock:
+            n._post_to_pushover(b"x" * 500_000, "image/png", context="500KB image test")
+
+        # urlopen called with positional (req, timeout) — check the timeout kwarg
+        call = mock.call_args
+        timeout = call.kwargs.get("timeout")
+        assert timeout is not None
+        # 10 (base) + 500 * 0.1 (per_kb) ≈ 58-62 depending on KB math
+        assert 58.0 <= timeout <= 62.0, f"expected ~60s, got {timeout}"
+
+    def test_retries_on_timeout(self, tmp_path: Path) -> None:
+        """Transient timeout → retries up to max_attempts before giving up."""
+        n = _make_notifier(
+            tmp_path,
+            enable_push=True,
+            push_max_attempts=3,
+            push_retry_backoff_seconds=0.001,  # fast test
+        )
+        with patch("urllib.request.urlopen", side_effect=TimeoutError("slow network")) as mock:
+            result = n._post_to_pushover(b"data", "image/png", context="timeout test")
+
+        assert mock.call_count == 3, "should retry up to max_attempts"
+        assert result is False, "should return False after all retries exhausted"
+
+    def test_succeeds_on_retry_after_transient_failure(self, tmp_path: Path) -> None:
+        """
+        First attempt times out, second succeeds → overall success.
+        This is the exact case that was broken in production: slow WiFi
+        causes the first upload to time out, but a retry gets through.
+        """
+        n = _make_notifier(
+            tmp_path,
+            enable_push=True,
+            push_max_attempts=3,
+            push_retry_backoff_seconds=0.001,
+        )
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=[
+                TimeoutError("first attempt slow"),
+                self._mock_success_response(),
+            ],
+        ) as mock:
+            result = n._post_to_pushover(b"data", "image/png", context="retry success")
+
+        assert mock.call_count == 2, "should stop retrying after success"
+        assert result is True, "should return True on successful retry"
+
+    def test_does_not_retry_on_api_rejection(self, tmp_path: Path) -> None:
+        """
+        Pushover status != 1 → no retry. API rejections (bad credentials,
+        rate limit, invalid user key) will not succeed on retry and would
+        just hammer the API. These must be handled differently from
+        network failures.
+        """
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'{"status": 0, "errors": ["invalid token"]}'
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+
+        n = _make_notifier(
+            tmp_path,
+            enable_push=True,
+            push_max_attempts=3,
+            push_retry_backoff_seconds=0.001,
+        )
+        with patch("urllib.request.urlopen", return_value=mock_response) as mock:
+            result = n._post_to_pushover(b"data", "image/png", context="api reject test")
+
+        assert mock.call_count == 1, "must NOT retry on API-level rejection"
+        assert result is False
+
+    def test_backoff_is_exponential(self, tmp_path: Path) -> None:
+        """
+        Sleep durations between retries scale exponentially: base, base*2, base*4.
+        This prevents hammering a temporarily slow endpoint while still
+        giving enough total time for it to recover.
+        """
+        n = _make_notifier(
+            tmp_path,
+            enable_push=True,
+            push_max_attempts=4,
+            push_retry_backoff_seconds=1.0,
+        )
+        with patch("urllib.request.urlopen", side_effect=TimeoutError("fail")):
+            with patch("time.sleep") as mock_sleep:
+                n._post_to_pushover(b"data", "image/png", context="backoff test")
+
+        # With 4 attempts, we sleep 3 times (between attempts 1→2, 2→3, 3→4)
+        sleep_durations = [call.args[0] for call in mock_sleep.call_args_list]
+        assert sleep_durations == [
+            1.0,
+            2.0,
+            4.0,
+        ], f"expected exponential backoff [1.0, 2.0, 4.0], got {sleep_durations}"
+
+    def test_full_push_with_image_recovers_from_transient_failure(self, tmp_path: Path) -> None:
+        """
+        End-to-end: _push() with a real image attachment recovers when the
+        first attempt times out. This is the production scenario that was
+        failing — image upload on slow WiFi times out at 5s, but succeeds
+        on a retry given enough time.
+        """
+        img = tmp_path / "capture.jpg"
+        img.write_bytes(b"\xff\xd8\xff" + b"0" * 200)  # fake JPEG bytes
+        obs = _make_observation()
+        obs = obs.model_copy(update={"image_path": str(img)})
+
+        n = _make_notifier(
+            tmp_path,
+            enable_push=True,
+            push_attach_image=True,
+            push_max_attempts=3,
+            push_retry_backoff_seconds=0.001,
+        )
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=[
+                TimeoutError("slow wifi"),
+                self._mock_success_response(),
+            ],
+        ) as mock:
+            n._push(obs)  # must not raise
+
+        assert mock.call_count == 2, "first attempt timed out, second succeeded"
+
+
 # ── _webhook ──────────────────────────────────────────────────────────────────
 
 
