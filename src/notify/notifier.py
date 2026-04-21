@@ -336,6 +336,10 @@ class Notifier:
         Args:
             observation: A confirmed BirdObservation from the fusion module.
         """
+        # Mark dispatched=True explicitly so the logged record reflects reality.
+        # model_copy preserves immutability of the original observation for callers.
+        observation = observation.model_copy(update={"dispatched": True})
+
         # Log is always first — guaranteed local persistence
         self._log(observation)
 
@@ -350,6 +354,47 @@ class Notifier:
 
         if self.enable_email:
             self._email(observation)
+
+    def log_suppressed(self, observation: BirdObservation) -> None:
+        """
+        Log an observation that was classified but not dispatched to users.
+
+        Used by the agent when an observation is suppressed by the confidence
+        threshold or cooldown gate. Without this method, below-threshold and
+        cooldown-suppressed observations would be silently discarded, leaving
+        no record that the system classified anything at all.
+
+        Background on the orphan-observation problem this addresses:
+            During April 20 deployment, 5186 of 5624 captured frames (92%)
+            had no corresponding observation log entry. The frames were
+            captured, classified, and scored by the fusion module, but the
+            observation object was garbage-collected inside _cycle() when
+            either the confidence threshold or cooldown gate returned early.
+            This made it impossible to analyze the visual classifier's
+            actual behavior on real bird events that were simply below the
+            user-notification threshold. The full classification stream is
+            valuable for evaluation, threshold tuning, and model improvement
+            even when the individual events are not worth notifying users
+            about.
+
+        This method writes to the same observations.jsonl as dispatch() but
+        marks the observation with dispatched=False. Downstream consumers
+        can filter on the dispatched field to preserve existing "notifications
+        sent" semantics where needed — the observation_tools.py LLM agent
+        functions remain backwards compatible when they filter
+        dispatched=True.
+
+        No user-facing side effects: no push, no webhook, no email, no print.
+        Only the JSONL log is written.
+
+        Args:
+            observation: BirdObservation to log. Will be marked dispatched=False
+                         before writing.
+        """
+        # model_copy preserves immutability — the agent's copy of the
+        # observation object is unchanged by this call.
+        observation = observation.model_copy(update={"dispatched": False})
+        self._log(observation)
 
     # ── Channel implementations ───────────────────────────────────────────────
 
