@@ -346,7 +346,30 @@ class VisionCapture:
         """
         Open both cameras via picamera2 for simultaneous capture.
 
-        Called lazily on first capture_frames().
+        Called lazily on first capture_frames(). Configures format,
+        resolution, and continuous autofocus before starting the sensors.
+
+        Format choice (picamera2 gotcha, addressed in PR #50):
+            picamera2's "RGB888" format actually returns bytes in B-G-R
+            order in the numpy array, a long-standing libcamera convention
+            where the format name describes the source pixel format rather
+            than the resulting memory layout. To get true R-G-B order in
+            the array (matching NABirds training data and PIL's default
+            interpretation), we request "BGR888", which libcamera then
+            delivers as R-G-B in memory. Without this, every frame fed
+            to EfficientNet had red and blue channels swapped, which
+            silently degraded classification on warm-plumage species
+            (house finches, sparrows, orioles) during Phase 5 deployment.
+
+        Autofocus (added in PR #50):
+            Pi Camera Module 3 has hardware autofocus, but libcamera's
+            default is manual focus at lens position 0.0 (infinity).
+            Birds at the feeder sit ~30 cm from the lens, well within
+            macro range, so fixed infinity focus produces the soft
+            captures observed in Phase 5. AfModeEnum.Continuous lets
+            each sensor track focus as birds land and move on the tray.
+            If a camera does not support autofocus (e.g. Module 2), we
+            log and continue so the system still captures at fixed focus.
         """
         try:
             from picamera2 import Picamera2  # type: ignore[import]
@@ -355,6 +378,14 @@ class VisionCapture:
                 "picamera2 is not installed or not available. "
                 "VisionCapture requires a Raspberry Pi with picamera2."
             ) from exc
+
+        # libcamera provides the AfModeEnum. Imported separately from
+        # picamera2 because older hardware without autofocus may still
+        # have picamera2 installed. Fall back gracefully if absent.
+        try:
+            from libcamera import controls  # type: ignore[import]
+        except ImportError:
+            controls = None
 
         logger.info(
             "Opening cameras %d and %d via picamera2...",
@@ -365,15 +396,41 @@ class VisionCapture:
         self._picam0 = Picamera2(self.primary_index)
         self._picam1 = Picamera2(self.secondary_index)
 
+        # "BGR888" is picamera2's counterintuitive name for true-RGB
+        # memory layout. See _open_cameras() docstring for full detail.
         config0 = self._picam0.create_still_configuration(
-            main={"size": (self.capture_width, self.capture_height), "format": "RGB888"},
+            main={"size": (self.capture_width, self.capture_height), "format": "BGR888"},
         )
         config1 = self._picam1.create_still_configuration(
-            main={"size": (self.capture_width, self.capture_height), "format": "RGB888"},
+            main={"size": (self.capture_width, self.capture_height), "format": "BGR888"},
         )
 
         self._picam0.configure(config0)
         self._picam1.configure(config1)
+
+        # Continuous autofocus for birds at macro range (~30cm). Set
+        # after configure() so the control applies to the active config.
+        # Wrapped in try/except so a single camera without AF does not
+        # prevent the other camera (or fixed-focus operation) from
+        # functioning.
+        if controls is not None:
+            for name, cam in [("cam0", self._picam0), ("cam1", self._picam1)]:
+                try:
+                    cam.set_controls({"AfMode": controls.AfModeEnum.Continuous})
+                    logger.info("Continuous autofocus enabled on %s.", name)
+                except Exception as exc:
+                    logger.warning(
+                        "Continuous autofocus unavailable on %s: %s. "
+                        "Falling back to fixed focus for this sensor.",
+                        name,
+                        exc,
+                    )
+        else:
+            logger.warning(
+                "libcamera controls module unavailable — "
+                "autofocus cannot be configured. Using fixed focus."
+            )
+
         self._picam0.start()
         self._picam1.start()
 
