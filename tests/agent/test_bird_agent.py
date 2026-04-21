@@ -225,6 +225,90 @@ class TestCycleHappyPath:
         assert kwargs["visual_result"] is not None
 
 
+# ── _cycle — suppressed observation logging ───────────────────────────────────
+
+
+class TestCycleSuppressedLogging:
+    """
+    Tests for PR #51: observations suppressed by the confidence threshold or
+    cooldown gate must still be logged via notifier.log_suppressed() so the
+    full classification stream is preserved for analysis.
+    """
+
+    def test_below_threshold_calls_log_suppressed(self) -> None:
+        """Below-threshold observation must be logged as suppressed."""
+        obs = _make_observation(fused_confidence=0.4)
+        cap = _make_capture_result(camera_index=0)
+        agent = _make_agent(
+            fused_observation=obs,
+            confidence_threshold=0.7,
+            audio_capture_returns=Path("/tmp/fake.wav"),
+            vision_capture_returns=(cap, None),
+        )
+
+        agent._cycle()
+
+        agent.notifier.log_suppressed.assert_called_once()
+        agent.notifier.dispatch.assert_not_called()
+
+    def test_cooldown_calls_log_suppressed(self) -> None:
+        """Cooldown-suppressed observation must be logged as suppressed."""
+        obs = _make_observation(fused_confidence=0.9, species_code="HOFI")
+        cap = _make_capture_result(camera_index=0)
+        agent = _make_agent(
+            fused_observation=obs,
+            cooldown_seconds=30.0,
+            audio_capture_returns=Path("/tmp/fake.wav"),
+            vision_capture_returns=(cap, None),
+        )
+
+        agent._cycle()  # first dispatch consumes cooldown budget
+        agent._cycle()  # second should be suppressed by cooldown
+
+        assert agent.notifier.dispatch.call_count == 1
+        assert agent.notifier.log_suppressed.call_count == 1
+
+    def test_suppressed_observation_has_media_paths(self) -> None:
+        """
+        Even suppressed observations must carry media paths so analysis
+        can correlate logged records with saved frames.
+        """
+        obs = _make_observation(fused_confidence=0.4)
+        cap = _make_capture_result(camera_index=0)
+        agent = _make_agent(
+            fused_observation=obs,
+            confidence_threshold=0.7,
+            audio_capture_returns=Path("/tmp/fake.wav"),
+            vision_capture_returns=(cap, None),
+        )
+
+        agent._cycle()
+
+        suppressed_obs = agent.notifier.log_suppressed.call_args.args[0]
+        assert suppressed_obs.image_path is not None
+        assert suppressed_obs.audio_path is not None
+
+    def test_dispatch_populates_media_paths(self) -> None:
+        """
+        Sanity check: dispatch path (above threshold, no cooldown) must
+        still populate media paths, unchanged from before PR #51.
+        """
+        obs = _make_observation(fused_confidence=0.9)
+        cap = _make_capture_result(camera_index=0)
+        agent = _make_agent(
+            fused_observation=obs,
+            confidence_threshold=0.7,
+            audio_capture_returns=Path("/tmp/fake.wav"),
+            vision_capture_returns=(cap, None),
+        )
+
+        agent._cycle()
+
+        dispatched_obs = agent.notifier.dispatch.call_args.args[0]
+        assert dispatched_obs.image_path is not None
+        assert dispatched_obs.audio_path is not None
+
+
 # ── _cycle — dual camera ──────────────────────────────────────────────────────
 
 

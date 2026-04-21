@@ -134,6 +134,23 @@ class BirdObservation(BaseModel):
         description="Combined confidence score after fusion.",
     )
 
+    dispatched: bool = Field(
+        default=True,
+        description=(
+            "Whether this observation triggered a user-facing notification. "
+            "True when the observation passed the confidence threshold and "
+            "cooldown gates and was dispatched via the notifier (push, email, "
+            "webhook). False when the observation was classified but suppressed "
+            "because fused_confidence was below the agent threshold, or because "
+            "the species was within its cooldown window after a recent dispatch. "
+            "Default True preserves backward compatibility: records written "
+            "before this field existed only existed because they were dispatched, "
+            "so deserializing an older record correctly treats it as dispatched=True. "
+            "Use this field to distinguish the 'user saw it' stream from the full "
+            "classification stream when analyzing logs."
+        ),
+    )
+
     # ── Modality results ──────────────────────────────────────────────────────
     audio_result: ClassificationResult | None = Field(
         default=None,

@@ -233,10 +233,16 @@ class BirdAgent:
             4. Classify primary camera frame if captured
             5. Classify secondary camera frame if captured
             6. Fuse all available results
-            7. Apply confidence threshold gate
-            8. Apply cooldown gate (suppress repeated same-species notifications)
-            9. Populate media paths on observation
-            10. Dispatch via notifier
+            7. Populate media paths, then confidence threshold gate
+               (suppressed observations logged with dispatched=False)
+            8. Cooldown gate (suppressed observations logged with dispatched=False)
+            9. Dispatch via notifier (only if both gates pass)
+
+        PR #51: Steps 7 and 8 now call notifier.log_suppressed() on suppression
+        rather than silently discarding the observation. This preserves the
+        full classification stream (dispatched + suppressed) in observations.jsonl
+        so analysis can correlate every classified frame with a logged record.
+
 
         Returns:
             BirdObservation if dispatched, else None.
@@ -324,25 +330,10 @@ class BirdAgent:
         )
 
         # ── Step 7: Confidence threshold gate ─────────────────────────────────
-        if observation.fused_confidence < self.confidence_threshold:
-            logger.debug(
-                "Below threshold: %s %.3f < %.3f",
-                observation.species_code,
-                observation.fused_confidence,
-                self.confidence_threshold,
-            )
-            return None
-
-        # ── Step 8: Cooldown gate ─────────────────────────────────────────────
-        if self._is_on_cooldown(observation.species_code):
-            logger.debug(
-                "Cooldown active for %s — suppressing notification.",
-                observation.species_code,
-            )
-            return None
-
-        # ── Step 9: Populate media paths ──────────────────────────────────────
-        # Pydantic models are immutable by default — rebuild with media paths set.
+        # Note: we populate media paths BEFORE the gate check so that even
+        # suppressed observations retain image/audio path references for later
+        # analysis. This lets us correlate any logged observation (dispatched
+        # or not) with the frame that produced it.
         observation = observation.model_copy(
             update={
                 "audio_path": str(audio_path) if audio_path else None,
@@ -351,7 +342,26 @@ class BirdAgent:
             }
         )
 
-        # ── Step 10: Dispatch ─────────────────────────────────────────────────
+        if observation.fused_confidence < self.confidence_threshold:
+            logger.debug(
+                "Below threshold: %s %.3f < %.3f — logging as suppressed.",
+                observation.species_code,
+                observation.fused_confidence,
+                self.confidence_threshold,
+            )
+            self.notifier.log_suppressed(observation)
+            return None
+
+        # ── Step 8: Cooldown gate ─────────────────────────────────────────────
+        if self._is_on_cooldown(observation.species_code):
+            logger.debug(
+                "Cooldown active for %s — logging as suppressed.",
+                observation.species_code,
+            )
+            self.notifier.log_suppressed(observation)
+            return None
+
+        # ── Step 9: Dispatch ─────────────────────────────────────────────────
         self.notifier.dispatch(observation)
         self._last_dispatch[observation.species_code] = datetime.now(UTC)
 

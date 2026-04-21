@@ -650,6 +650,119 @@ class TestNetworkResilience:
 
 
 # ── _webhook ──────────────────────────────────────────────────────────────────
+# ── log_suppressed ────────────────────────────────────────────────────────────
+
+
+class TestLogSuppressed:
+    """
+    Tests for Notifier.log_suppressed — the below-threshold logging path added
+    in PR #51 to eliminate orphan observations.
+
+    Before this PR, observations that failed the confidence threshold or
+    cooldown gate in BirdAgent._cycle() were silently discarded with only a
+    DEBUG log message. On April 20 deployment this caused 5186 of 5624
+    captured frames to have no corresponding entry in observations.jsonl,
+    making analysis of the visual classifier's actual behavior impossible.
+    log_suppressed writes these observations to the same file with
+    dispatched=False so the full classification stream is preserved.
+    """
+
+    def test_writes_to_log_file(self, tmp_path: Path) -> None:
+        """log_suppressed must append a JSONL record like dispatch() does."""
+        n = _make_notifier(tmp_path)
+        n.log_suppressed(_make_observation(species_code="HOFI", fused_confidence=0.15))
+
+        assert n.log_path.exists()
+        lines = n.log_path.read_text().strip().split("\n")
+        assert len(lines) == 1
+        record = json.loads(lines[0])
+        assert record["species_code"] == "HOFI"
+
+    def test_marks_dispatched_false(self, tmp_path: Path) -> None:
+        """Logged record must have dispatched=False set."""
+        n = _make_notifier(tmp_path)
+        n.log_suppressed(_make_observation(species_code="SOSP", fused_confidence=0.12))
+
+        record = json.loads(n.log_path.read_text().strip())
+        assert record["dispatched"] is False
+
+    def test_does_not_trigger_push(self, tmp_path: Path) -> None:
+        """log_suppressed must not trigger Pushover API calls."""
+        n = _make_notifier(tmp_path, enable_push=True)
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            n.log_suppressed(_make_observation(species_code="AMCR", fused_confidence=0.10))
+
+        mock_urlopen.assert_not_called()
+
+    def test_does_not_print(self, tmp_path: Path, capsys) -> None:
+        """log_suppressed must not write to stdout even when print is enabled."""
+        n = _make_notifier(tmp_path, enable_print=True)
+        n.log_suppressed(_make_observation(species_code="WBNU", fused_confidence=0.18))
+
+        assert capsys.readouterr().out == ""
+
+    def test_preserves_caller_observation_immutability(self, tmp_path: Path) -> None:
+        """
+        The observation passed in must not be mutated — model_copy should
+        return a new object. This matches how dispatch() handles the update.
+        """
+        n = _make_notifier(tmp_path)
+        obs = _make_observation(species_code="HOFI", fused_confidence=0.15)
+        assert obs.dispatched is True  # default
+
+        n.log_suppressed(obs)
+
+        # The original object should be unchanged
+        assert obs.dispatched is True
+
+
+# ── dispatched field ──────────────────────────────────────────────────────────
+
+
+class TestDispatchedField:
+    """
+    Tests for the dispatched field added to BirdObservation in PR #51.
+    """
+
+    def test_dispatch_marks_record_dispatched_true(self, tmp_path: Path) -> None:
+        """dispatch() must set dispatched=True on the logged record."""
+        n = _make_notifier(tmp_path)
+        n.dispatch(_make_observation(species_code="HOFI", fused_confidence=0.85))
+
+        record = json.loads(n.log_path.read_text().strip())
+        assert record["dispatched"] is True
+
+    def test_default_true_for_new_observations(self) -> None:
+        """
+        Backward compatibility: a BirdObservation constructed without the
+        dispatched field should default to True. This ensures records written
+        before PR #51 (which are loaded from observations.jsonl without the
+        field) deserialize with dispatched=True, matching historical reality
+        where only dispatched observations were logged.
+        """
+        obs = BirdObservation(
+            species_code="HOFI",
+            common_name="House Finch",
+            scientific_name="Haemorhous mexicanus",
+            fused_confidence=0.85,
+        )
+        assert obs.dispatched is True
+
+    def test_deserialization_backward_compatible(self) -> None:
+        """
+        Loading an old record (without dispatched field) must succeed and
+        default dispatched to True. This guards the analyzer notebooks and
+        LLM agent tools that read observations.jsonl.
+        """
+        old_record = {
+            "species_code": "HOFI",
+            "common_name": "House Finch",
+            "scientific_name": "Haemorhous mexicanus",
+            "fused_confidence": 0.85,
+        }
+        obs = BirdObservation(**old_record)
+        assert obs.dispatched is True
 
 
 class TestNotifierWebhook:
