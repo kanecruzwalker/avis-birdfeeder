@@ -34,6 +34,36 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+# ── Gate reason values ────────────────────────────────────────────────────────
+# Stored as plain string constants (not a StrEnum) for maximum backward
+# compatibility with serialized BirdObservation records in observations.jsonl.
+# New values can be added freely without risk of breaking deserialization of
+# older records; renames of existing values require care because existing
+# JSONL entries would need to stay readable (either via a compat alias table
+# or an explicit migration).
+#
+# These are the values that may appear in BirdObservation.gate_reason.
+# Always import these constants rather than writing the raw string literals
+# so the values stay consistent across producers and consumers.
+
+GATE_REASON_NO_BIRD_DETECTED = "no_bird_detected"
+"""The bird-presence detector returned no detection; classifier was skipped.
+Set by BirdAgent._cycle when both cameras' CaptureResults have gate_passed=False
+AND no audio detection is available. Introduced in Branch 2."""
+
+GATE_REASON_BELOW_CONFIDENCE_THRESHOLD = "below_confidence_threshold"
+"""The fused confidence was below the agent's confidence_threshold.
+Set by BirdAgent._cycle when the threshold gate suppresses dispatch."""
+
+GATE_REASON_SPECIES_COOLDOWN = "species_cooldown"
+"""The species was dispatched within the configured cooldown_seconds window.
+Set by BirdAgent._cycle when the cooldown gate suppresses dispatch."""
+
+GATE_REASON_NO_AUDIO_DETECTED = "no_audio_detected"
+"""The audio pipeline returned no SD species detection.
+Reserved for future use when audio-only pipelines need explicit reason codes."""
+
+
 class Modality(StrEnum):
     """Which sensor produced this classification."""
 
@@ -194,6 +224,37 @@ class BirdObservation(BaseModel):
             "Crop strategy active when this observation was made. "
             "'fixed_crop' = static ROI. 'yolo' = YOLOv8s bounding box. "
             "Set by ExperimentOrchestrator for A/B analysis."
+        ),
+    )
+
+    gate_reason: str | None = Field(
+        default=None,
+        description=(
+            "If this observation was suppressed (not dispatched to users), "
+            "why. Populated by BirdAgent._cycle when a gate blocks dispatch. "
+            "Stable string constants defined at module scope (GATE_REASON_*). "
+            "\n\n"
+            "Values (see module-level constants):\n"
+            "  None                          — observation dispatched normally,\n"
+            "                                  OR legacy record from before the "
+            "field existed\n"
+            "  'no_bird_detected'            — bird-presence gate returned no "
+            "detection; classifier skipped\n"
+            "  'below_confidence_threshold'  — fused confidence below agent "
+            "threshold\n"
+            "  'species_cooldown'            — species dispatched within cooldown "
+            "window\n"
+            "\n"
+            "Relationship to the `dispatched` field:\n"
+            "  dispatched=True   → gate_reason MUST be None\n"
+            "  dispatched=False  → gate_reason SHOULD be set\n"
+            "  Legacy pre-Branch-2 suppressed records may have "
+            "dispatched=False and gate_reason=None; treat these as\n"
+            "  'below_confidence_threshold' or 'species_cooldown' based on "
+            "context (fused_confidence vs threshold).\n"
+            "\n"
+            "Introduced in Branch 2 (Phase 8 bird-presence gate). Backward "
+            "compatible — old records deserialize with gate_reason=None."
         ),
     )
 

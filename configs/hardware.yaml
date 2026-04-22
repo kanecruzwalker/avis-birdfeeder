@@ -152,6 +152,47 @@ hailo:
   detection_mode: "fixed_crop" # "fixed_crop" or "yolo" - set "yolo" locally on Pi
 
 
+# ── Bird-presence detector configuration (Branch 2, Phase 8) ─────────────────
+# Controls the gate that runs between motion detection and species
+# classification. On motion-triggered frames, the detector asks "is there
+# a bird in this frame?" — if no, the classifier is skipped and a
+# gate_reason="no_bird_detected" observation is logged.
+#
+# This is the primary Phase 8 fix for empty-feeder noise dispatch. See
+# docs/investigations/hailo-2026-04-22.md for the full investigation.
+detector:
+  # Which backend to use for bird-presence detection.
+  #   "cpu"   — ultralytics YOLOv8s on CPU (default, available now).
+  #             ~1000ms inference on Pi 5, acceptable given 8s cycle interval.
+  #   "hailo" — Hailo NPU inference. Deferred to Branch 5 (post-report).
+  #             Raises NotImplementedError if selected today.
+  backend: "cpu"
+
+  # CPU backend settings (used when backend: "cpu")
+  cpu:
+    # Path or name passed to ultralytics.YOLO(). "yolov8s.pt" is resolved
+    # by ultralytics to its default download location (~22MB download on
+    # first use). Pin to a local path for reproducibility if needed.
+    model_path: "yolov8s.pt"
+    # Minimum YOLO confidence to accept a bird detection. 0.25 is a
+    # reasonable default for backyard birds. Raise to reduce false
+    # positives (but risk missing small/distant birds). Lower to catch
+    # more birds (but accept more noise).
+    confidence_threshold: 0.25
+    # YOLO input image size. 640 is the YOLOv8s canonical training size.
+    imgsz: 640
+
+  # Hailo backend settings (deferred to Branch 5 — not yet consumed)
+  hailo:
+    hef_path: "models/detector/yolov8s_bird.hef"  # custom HEF, future work
+    score_threshold: 0.25
+
+
+
+
+
+
+
 
 
 # ── YOLO detection ─────────────────────────────────────────────────────────

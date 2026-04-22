@@ -23,7 +23,7 @@ Markers:
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -420,6 +420,153 @@ class TestProcessFrame:
 
 
 class TestCaptureResult:
+    def test_can_construct_directly(self, tmp_path: Path) -> None:
+        result = CaptureResult(
+            frame=np.zeros((_CLASS_H, _CLASS_W, 3), dtype=np.float32),
+            raw_frame=np.zeros((_CAPTURE_H, _CAPTURE_W, 3), dtype=np.uint8),
+            camera_index=0,
+            image_path=tmp_path / "frame.png",
+            motion_score=0.12,
+        )
+        assert result.camera_index == 0
+        assert result.motion_score == pytest.approx(0.12)
+
+    def test_image_path_can_be_none(self) -> None:
+        result = CaptureResult(
+            frame=np.zeros((_CLASS_H, _CLASS_W, 3), dtype=np.float32),
+            raw_frame=np.zeros((_CAPTURE_H, _CAPTURE_W, 3), dtype=np.uint8),
+            camera_index=1,
+            image_path=None,
+            motion_score=0.07,
+        )
+        assert result.image_path is None
+
+    def test_default_gate_passed_is_true(self) -> None:
+        """Backward compatibility: CaptureResult without gate_passed arg defaults to True."""
+        result = CaptureResult(
+            frame=np.zeros((_CLASS_H, _CLASS_W, 3), dtype=np.float32),
+            raw_frame=np.zeros((_CAPTURE_H, _CAPTURE_W, 3), dtype=np.uint8),
+            camera_index=0,
+            image_path=None,
+            motion_score=0.1,
+        )
+        assert result.gate_passed is True
+
+    def test_gate_passed_false_with_reason(self) -> None:
+        """Gate-suppressed CaptureResult has frame=None and gate_reason set."""
+        from src.data.schema import GATE_REASON_NO_BIRD_DETECTED
+
+        result = CaptureResult(
+            frame=None,
+            raw_frame=np.zeros((_CAPTURE_H, _CAPTURE_W, 3), dtype=np.uint8),
+            camera_index=0,
+            image_path=None,
+            motion_score=0.1,
+            gate_passed=False,
+            gate_reason=GATE_REASON_NO_BIRD_DETECTED,
+        )
+        assert result.frame is None
+        assert result.gate_passed is False
+        assert result.gate_reason == GATE_REASON_NO_BIRD_DETECTED
+
+
+# ── TestProcessFrameGate ──────────────────────────────────────────────────────
+
+
+class TestProcessFrameGate:
+    """
+    Tests for the bird-presence gate integration in _process_frame.
+    The gate is an injected BirdDetector (mocked here). These tests verify:
+      - Gate is invoked on motion-triggered frames
+      - gate_passed=False when detector returns None
+      - gate_passed=True when detector returns a BirdDetection
+      - Gate errors don't break the cycle (treated as gate-passed)
+      - No gate (None) preserves pre-Branch-2 behavior
+    """
+
+    def _make_mock_detector(self, detection=None, raise_exc=None) -> MagicMock:
+        """
+        Build a mock BirdDetector. Pass detection=<BirdDetection> to simulate
+        a bird found, detection=None for no-bird, raise_exc=<Exception> to
+        simulate detector failure.
+        """
+        mock = MagicMock()
+        """
+        Build a mock BirdDetector. Pass detection=<BirdDetection> to simulate
+        a bird found, detection=None for no-bird, raise_exc=<Exception> to
+        simulate detector failure.
+        """
+        from unittest.mock import MagicMock as MM
+
+        mock = MM()
+        mock.is_open = False
+
+        def open_side_effect():
+            mock.is_open = True
+
+        mock.open.side_effect = open_side_effect
+
+        if raise_exc is not None:
+            mock.detect.side_effect = raise_exc
+        else:
+            mock.detect.return_value = detection
+
+        return mock
+
+    def test_no_gate_detector_preserves_legacy_behavior(self, tmp_path: Path) -> None:
+        """When gate_detector is None, every motion-triggered frame produces a classifier-ready CaptureResult."""
+        vc = _make_capture(tmp_path, gate_detector=None)
+        result = vc._process_frame(_raw_frame(), camera_index=0)
+        assert result is not None
+        assert result.gate_passed is True
+        assert result.frame is not None
+
+    def test_gate_returns_none_blocks_classification(self, tmp_path: Path) -> None:
+        """When detector returns None, CaptureResult has gate_passed=False and frame=None."""
+        from src.data.schema import GATE_REASON_NO_BIRD_DETECTED
+
+        detector = self._make_mock_detector(detection=None)
+        vc = _make_capture(tmp_path, gate_detector=detector)
+        result = vc._process_frame(_raw_frame(), camera_index=0)
+
+        assert result is not None
+        assert result.gate_passed is False
+        assert result.frame is None
+        assert result.gate_reason == GATE_REASON_NO_BIRD_DETECTED
+        detector.detect.assert_called_once()
+
+    def test_gate_returns_detection_passes_through(self, tmp_path: Path) -> None:
+        """When detector returns a bird, CaptureResult has gate_passed=True and frame populated."""
+        from src.vision.detector import BirdDetection
+
+        detection = BirdDetection(x1=100, y1=100, x2=300, y2=300, confidence=0.85)
+        detector = self._make_mock_detector(detection=detection)
+        vc = _make_capture(tmp_path, gate_detector=detector)
+        result = vc._process_frame(_raw_frame(), camera_index=0)
+
+        assert result is not None
+        assert result.gate_passed is True
+        assert result.frame is not None
+        assert result.gate_confidence == pytest.approx(0.85)
+
+    def test_gate_error_continues_as_gate_passed(self, tmp_path: Path) -> None:
+        """If the detector raises, we conservatively treat the frame as gate-passed."""
+        detector = self._make_mock_detector(raise_exc=RuntimeError("detector broken"))
+        vc = _make_capture(tmp_path, gate_detector=detector)
+        result = vc._process_frame(_raw_frame(), camera_index=0)
+
+        assert result is not None
+        # Conservative default: on detector error, don't lose potential real birds.
+        assert result.gate_passed is True
+        assert result.frame is not None
+
+    def test_gate_opened_on_first_use(self, tmp_path: Path) -> None:
+        """Detector's open() is called lazily on first _process_frame."""
+        detector = self._make_mock_detector(detection=None)
+        vc = _make_capture(tmp_path, gate_detector=detector)
+        vc._process_frame(_raw_frame(), camera_index=0)
+        detector.open.assert_called_once()
+
     def test_can_construct_directly(self, tmp_path: Path) -> None:
         result = CaptureResult(
             frame=np.zeros((_CLASS_H, _CLASS_W, 3), dtype=np.float32),

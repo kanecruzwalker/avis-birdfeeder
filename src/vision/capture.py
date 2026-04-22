@@ -125,6 +125,62 @@ def _create_shared_vdevice() -> object:
     return _HailoVDevice(params)
 
 
+def _maybe_load_gate_detector(config_dir: str | Path) -> object | None:
+    """
+    Load the configured BirdDetector if detector.backend is set, else None.
+
+    This is a soft-import helper — if hardware.yaml has no detector block
+    (e.g., running against an older config before Branch 2), we return None
+    and VisionCapture falls back to the legacy "no gate, classifier sees
+    every motion-triggered frame" behavior.
+
+    If detector.backend is set but the chosen backend fails to load (e.g.,
+    ultralytics not installed), we log a warning and return None. The
+    agent continues to run without a gate rather than crashing on startup.
+
+    Args:
+        config_dir: Path to the configs/ directory.
+
+    Returns:
+        A BirdDetector instance, or None if no detector should be used.
+    """
+    try:
+        from src.vision.detector import load_detector  # local import to avoid cycles
+    except ImportError as exc:
+        logger.warning(
+            "Could not import src.vision.detector — gate disabled. Error: %s",
+            exc,
+        )
+        return None
+
+    config_dir = Path(config_dir)
+    with (config_dir / "hardware.yaml").open() as f:
+        hw = yaml.safe_load(f)
+
+    detector_cfg = hw.get("detector")
+    if not detector_cfg:
+        logger.info(
+            "hardware.yaml has no `detector` block — bird-presence gate disabled. "
+            "All motion-triggered frames will reach the classifier (legacy behavior)."
+        )
+        return None
+
+    try:
+        detector = load_detector(config_dir)
+        logger.info(
+            "Bird-presence gate enabled | backend=%s",
+            detector_cfg.get("backend", "cpu"),
+        )
+        return detector
+    except Exception as exc:
+        logger.warning(
+            "Could not load gate detector (%s) — gate disabled. Agent will run "
+            "without bird-presence filtering, reproducing pre-Branch-2 behavior.",
+            exc,
+        )
+        return None
+
+
 # Detection mode constants
 DETECTION_MODE_FIXED_CROP = "fixed_crop"
 DETECTION_MODE_YOLO = "yolo"
@@ -133,29 +189,64 @@ DETECTION_MODE_YOLO = "yolo"
 @dataclass
 class CaptureResult:
     """
-    Output of a single camera capture, post-crop and post-preprocess.
+    Output of a single camera capture.
+
+    The capture pipeline applies two gates before returning a CaptureResult:
+        1. Motion gate — background model comparison. If the frame is below
+           the motion threshold, _process_frame returns None (no CaptureResult
+           is produced at all).
+        2. Bird-presence gate (Branch 2) — BirdDetector inference. If the
+           detector returns no bird, the CaptureResult is still produced but
+           has gate_passed=False and frame=None, and the classifier is skipped.
+
+    When gate_passed=True, the classifier should be called with self.frame.
+    When gate_passed=False, self.frame is None and the classifier must be
+    skipped; the agent logs a gate_reason="no_bird_detected" suppressed
+    observation.
 
     Attributes:
-        frame:          Preprocessed float32 array (224, 224, 3), ImageNet-normalized.
-                        Ready for VisualClassifier.predict().
+        frame:          Preprocessed float32 array (224, 224, 3), ImageNet-
+                        normalized, ready for VisualClassifier.predict().
+                        None when gate_passed is False.
         raw_frame:      Raw uint8 array at full capture resolution (H, W, 3).
-                        Preserved in memory for stereo depth estimation in Phase 6.
+                        Always populated regardless of gate outcome.
+                        Preserved for stereo depth estimation in Phase 6 and
+                        for future re-classification of gated frames.
         camera_index:   Which camera produced this frame (0=primary, 1=secondary).
         image_path:     Absolute path where the cropped frame was saved to disk,
-                        or None if the save failed.
+                        or None if the save failed. Populated when gate_passed;
+                        when gate blocked the frame, we save the fixed-crop
+                        anyway so gate-suppressed frames have a visual record.
         motion_score:   Mean absolute pixel difference from background model.
-        detection_mode: Which detection mode produced this crop ("fixed_crop"|"yolo").
-        detection_box:  (x1, y1, x2, y2) bounding box in original frame coordinates
-                        if YOLO detected a bird, else None.
+        detection_mode: Which detection mode produced this crop
+                        ("fixed_crop"|"yolo"). When gate_passed=False this
+                        reflects the mode attempted.
+        detection_box:  (x1, y1, x2, y2) bounding box in original frame
+                        coordinates if detector returned a bird, else None.
+        gate_passed:    True if the bird-presence detector returned a bird;
+                        False if the detector returned no bird. Introduced
+                        in Branch 2. Defaults to True for backward compatibility
+                        so code that constructs CaptureResult without caring
+                        about the gate (e.g., tests predating Branch 2) keeps
+                        working.
+        gate_reason:    When gate_passed=False, the reason the gate blocked.
+                        One of the GATE_REASON_* constants in src.data.schema.
+                        None when gate_passed=True. Introduced in Branch 2.
+        gate_confidence: Detector's confidence in the returned bird when
+                        gate_passed=True, or None when gate_passed=False.
+                        Useful for downstream analysis.
     """
 
-    frame: np.ndarray  # (224, 224, 3) float32 preprocessed
+    frame: np.ndarray | None  # (224, 224, 3) float32 preprocessed; None when gate blocked
     raw_frame: np.ndarray  # (H, W, 3) uint8 full resolution
     camera_index: int
     image_path: Path | None
     motion_score: float
     detection_mode: str = DETECTION_MODE_FIXED_CROP
     detection_box: tuple[int, int, int, int] | None = None
+    gate_passed: bool = True
+    gate_reason: str | None = None
+    gate_confidence: float | None = None
 
 
 class VisionCapture:
@@ -203,6 +294,7 @@ class VisionCapture:
         yolo_crop_padding: int = 20,
         hailo_enabled: bool = False,
         shared_vdevice: object | None = None,
+        gate_detector: object | None = None,
     ) -> None:
         """
         Args:
@@ -264,6 +356,19 @@ class VisionCapture:
         self.yolo_min_bird_confidence = yolo_min_bird_confidence
         self.yolo_crop_padding = yolo_crop_padding
         self.hailo_enabled = hailo_enabled
+
+        # Bird-presence gate detector (Branch 2).
+        # Accepts any object matching the BirdDetector protocol
+        # (see src.vision.detector). Injected here rather than constructed
+        # internally so tests can pass mocks and from_config can pass a
+        # CPU or Hailo implementation based on hardware.yaml: detector.backend.
+        #
+        # None means no gate — behavior falls through to the legacy path where
+        # every motion-triggered frame reaches the classifier. This preserves
+        # backward compatibility for callers that construct VisionCapture
+        # without a detector (notably pre-Branch-2 tests).
+        self._gate_detector = gate_detector
+        self._gate_detector_open = False
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -393,6 +498,7 @@ class VisionCapture:
             yolo_max_proposals=yolo_cfg.get("max_proposals", 10),
             yolo_min_bird_confidence=yolo_cfg.get("min_bird_confidence", 0.25),
             hailo_enabled=hailo_enabled,
+            gate_detector=_maybe_load_gate_detector(config_dir),
         )
 
     def _open_cameras(self) -> None:
@@ -558,22 +664,27 @@ class VisionCapture:
         camera_index: int,
     ) -> CaptureResult | None:
         """
-        Apply motion gate, crop (fixed or YOLO), save, and preprocess a frame.
-
-        In fixed_crop mode:
-            Apply feeder_crop ROI → motion gate → save → preprocess.
-
-        In yolo mode:
-            Apply feeder_crop for motion gate only → if motion detected,
-            run YOLO on full frame → use detected bird box as crop region
-            (falls back to fixed_crop if no bird detected by YOLO).
-
-        Args:
-            raw_frame:    Full resolution (H, W, 3) uint8 RGB from picamera2.
-            camera_index: Which camera this frame came from.
+        Apply the full capture pipeline:
+        motion gate → bird-presence gate → crop → save → preprocess.
 
         Returns:
-            CaptureResult if frame passes motion gate, else None.
+            None if the motion gate rejected the frame (no CaptureResult is
+            produced when there's no motion — this is the hot-path bail-out).
+
+            CaptureResult with gate_passed=False when motion fired but the
+            bird-presence gate rejected the frame. frame is None in this
+            case, but raw_frame, image_path, and motion_score are populated
+            so the agent can log a gate-suppressed observation.
+
+            CaptureResult with gate_passed=True when both gates passed.
+            frame, raw_frame, image_path, motion_score, detection_mode, and
+            detection_box (if in yolo mode) are all populated. The agent
+            runs the classifier on frame in this case.
+
+        Gate ordering: motion first, bird-presence second. Motion is the
+        cheap gate (pixel diff on a pre-cropped region); detection is the
+        expensive gate (~1s CPU YOLO inference). We never run the detector
+        on a frame that the motion gate already rejected.
         """
         cx = self.crop_x_cam1 if camera_index == self.secondary_index else self.crop_x
         cy = self.crop_y_cam1 if camera_index == self.secondary_index else self.crop_y
@@ -585,7 +696,7 @@ class VisionCapture:
             cx : cx + cw,
         ]
 
-        # ── Motion gate ───────────────────────────────────────────────────────
+        # ── Motion gate (cheap) ───────────────────────────────────────────────
         motion_score, bg = self._compute_motion(fixed_crop, camera_index)
         self._update_background(fixed_crop, camera_index, bg)
 
@@ -605,47 +716,102 @@ class VisionCapture:
             self.motion_threshold,
         )
 
-        # ── Crop selection — fixed_crop or YOLO ───────────────────────────────
-        crop_to_classify = fixed_crop
-        detection_mode = DETECTION_MODE_FIXED_CROP
-        detection_box = None
-
-        if self.detection_mode == DETECTION_MODE_YOLO:
-            yolo_ready = self._load_detector()
-            if yolo_ready and self._detector is not None:
+        # ── Bird-presence gate (expensive) ───────────────────────────────────
+        # The gate runs on the FULL raw frame (not the fixed crop) so the
+        # detector can see birds that may be outside the feeder ROI — e.g.
+        # perched on the edge of the frame, on a nearby branch, mid-flight.
+        # This is the Phase 8 noise-suppression fix (see
+        # docs/investigations/hailo-2026-04-22.md Decision 1).
+        gate_detection = None
+        if self._gate_detector is not None:
+            if not self._gate_detector_open:
                 try:
-                    detection = self._detector.detect(raw_frame)
-                    if detection is not None:
-                        crop_to_classify = detection.as_crop(
-                            raw_frame, padding=self.yolo_crop_padding
-                        )
-                        detection_mode = DETECTION_MODE_YOLO
-                        detection_box = (
-                            detection.x1,
-                            detection.y1,
-                            detection.x2,
-                            detection.y2,
-                        )
-                        logger.debug(
-                            "Camera %d: YOLO bird detected conf=%.3f " "box=(%d,%d,%d,%d)",
-                            camera_index,
-                            detection.confidence,
-                            detection.x1,
-                            detection.y1,
-                            detection.x2,
-                            detection.y2,
-                        )
-                    else:
-                        logger.debug(
-                            "Camera %d: YOLO no bird — falling back to fixed_crop.",
-                            camera_index,
-                        )
+                    self._gate_detector.open()
+                    self._gate_detector_open = True
                 except Exception as exc:
                     logger.warning(
-                        "Camera %d: YOLO detection failed (%s) — " "falling back to fixed_crop.",
+                        "Camera %d: gate_detector.open() failed (%s) — falling back "
+                        "to no-gate behavior. Agent will proceed as if gate passed.",
                         camera_index,
                         exc,
                     )
+                    self._gate_detector = None  # disable for rest of session
+
+            if self._gate_detector is not None:
+                try:
+                    gate_detection = self._gate_detector.detect(raw_frame)
+                except Exception as exc:
+                    logger.warning(
+                        "Camera %d: gate detection failed (%s) — treating as "
+                        "gate-passed for this frame (conservative: we prefer "
+                        "classifier noise to silently dropped real birds).",
+                        camera_index,
+                        exc,
+                    )
+                    # Continue as if gate passed — a failed detector is treated
+                    # as a no-op, not a blocker.
+                    gate_detection = None
+                    gate_error = True
+                else:
+                    gate_error = False
+
+                if self._gate_detector is not None and not gate_error and gate_detection is None:
+                    # Gate said no bird — save the fixed crop anyway so
+                    # researchers can review gated frames later, then return
+                    # a gate_passed=False CaptureResult.
+                    image_path = self._save_frame(fixed_crop, camera_index)
+                    from src.data.schema import GATE_REASON_NO_BIRD_DETECTED
+
+                    return CaptureResult(
+                        frame=None,
+                        raw_frame=raw_frame,
+                        camera_index=camera_index,
+                        image_path=image_path,
+                        motion_score=motion_score,
+                        detection_mode=DETECTION_MODE_FIXED_CROP,
+                        detection_box=None,
+                        gate_passed=False,
+                        gate_reason=GATE_REASON_NO_BIRD_DETECTED,
+                        gate_confidence=None,
+                    )
+
+        # ── Crop selection — fixed_crop or YOLO (when gate passed) ────────────
+        crop_to_classify = fixed_crop
+        detection_mode = DETECTION_MODE_FIXED_CROP
+        detection_box = None
+        gate_confidence = None
+
+        if gate_detection is not None:
+            gate_confidence = gate_detection.confidence
+
+            # In "yolo" detection_mode, crop to the detector's bounding box.
+            # In "fixed_crop" detection_mode, use the fixed ROI even though
+            # the gate confirmed a bird (the gate's job is bird/no-bird;
+            # the crop strategy is an independent A/B experiment).
+            if self.detection_mode == DETECTION_MODE_YOLO:
+                crop_to_classify = gate_detection.as_crop(raw_frame, padding=self.yolo_crop_padding)
+                detection_mode = DETECTION_MODE_YOLO
+                detection_box = (
+                    gate_detection.x1,
+                    gate_detection.y1,
+                    gate_detection.x2,
+                    gate_detection.y2,
+                )
+                logger.debug(
+                    "Camera %d: gate bird conf=%.3f box=(%d,%d,%d,%d), " "using YOLO crop",
+                    camera_index,
+                    gate_detection.confidence,
+                    gate_detection.x1,
+                    gate_detection.y1,
+                    gate_detection.x2,
+                    gate_detection.y2,
+                )
+            else:
+                logger.debug(
+                    "Camera %d: gate bird conf=%.3f, using fixed_crop",
+                    camera_index,
+                    gate_detection.confidence,
+                )
 
         # ── Save crop ─────────────────────────────────────────────────────────
         image_path = self._save_frame(crop_to_classify, camera_index)
@@ -665,6 +831,9 @@ class VisionCapture:
             motion_score=motion_score,
             detection_mode=detection_mode,
             detection_box=detection_box,
+            gate_passed=True,
+            gate_reason=None,
+            gate_confidence=gate_confidence,
         )
 
     def _compute_motion(
@@ -762,6 +931,14 @@ class VisionCapture:
                 logger.warning("Error closing HailoDetector: %s", exc)
             self._detector = None
             self._detector_open = False
+
+        if self._gate_detector is not None and self._gate_detector_open:
+            try:
+                self._gate_detector.close()
+                logger.info("Gate detector closed.")
+            except Exception as exc:
+                logger.warning("Error closing gate detector: %s", exc)
+            self._gate_detector_open = False
 
         if self._shared_vdevice is not None:
             try:

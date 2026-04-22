@@ -44,3 +44,13 @@ resampy==0.4.3
 # Utilities
 python-dotenv==1.0.1
 
+
+# ── CPU YOLO for bird-presence gate (Phase 8, Branch 2) ──────────────────────
+# On Pi, install via:
+#   pip install ultralytics --break-system-packages --no-deps
+# --no-deps avoids re-pinning torch (the Pi already has a working torch>=2.6.0
+# from earlier phases). ultralytics' torch pin is broader than what works on
+# Pi 5 ARM64 so letting it auto-resolve can break the existing install.
+ultralytics>=8.4.0
+
+

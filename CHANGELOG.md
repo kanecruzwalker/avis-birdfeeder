@@ -10,6 +10,50 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+### Phase 8 — Bird-Presence Gate (Branch 2)
+
+#### Added
+- `BirdDetector` protocol in `src/vision/detector.py` with `CPUYOLODetector`
+  implementation using ultralytics YOLOv8s on CPU. Runs between motion
+  detection and species classification to filter out empty-feeder frames
+  that previously got classified as noise.
+- `GATE_REASON_*` string constants in `src/data/schema.py` (plain strings
+  rather than StrEnum for maximum backward compatibility with serialized
+  observations).
+- `BirdObservation.gate_reason` field — records why a suppressed observation
+  was suppressed. Values: `no_bird_detected`, `below_confidence_threshold`,
+  `species_cooldown`. `None` when the observation was dispatched or when the
+  record predates Branch 2.
+- `CaptureResult.gate_passed`, `CaptureResult.gate_reason`,
+  `CaptureResult.gate_confidence` fields — communicate gate state from
+  `VisionCapture` to `BirdAgent`. `gate_passed` defaults to `True` for
+  backward compatibility with code paths that don't run the gate.
+- `configs/hardware.yaml: detector.*` block — selects detector backend
+  (`cpu` or `hailo`) and per-backend settings (model path, confidence
+  threshold, imgsz).
+- `BirdAgent._log_gate_suppressed()` helper — synthesizes a sentinel
+  `species_code="NONE"` observation when both cameras' gates block AND
+  no audio detection fills the gap, so gate-blocked motion events are
+  preserved in `observations.jsonl` for ablation analysis.
+
+#### Changed
+- `BirdAgent._cycle()` now checks `gate_passed` per camera before invoking
+  the visual classifier. Pre-existing suppression paths (threshold, cooldown)
+  now also populate `gate_reason` on the logged observation.
+- `VisionCapture._process_frame()` runs the bird-presence gate after the
+  motion gate but before classifier preprocessing. Gate failure produces a
+  `CaptureResult` with `frame=None, gate_passed=False`.
+- `ultralytics>=8.4.0,<9.0.0` added to `requirements.txt` and `requirements-pi.txt`.
+
+#### Context
+- Full investigation and design rationale:
+  `docs/investigations/hailo-2026-04-22.md`.
+- Follow-on branches: `fix/hailo-classifier-normalization` (Branch 3),
+  `refactor/orchestrator-agentic-windows` (Branch 4),
+  `feat/hailo-yolo-compilation` (Branch 5, deferred post-report).
+
+
+
 ### Changed
 - `VisionCapture.__init__` now accepts a `hailo_enabled` parameter that controls
   shared VDevice creation, replacing the previous `detection_mode == "yolo"` gate.
