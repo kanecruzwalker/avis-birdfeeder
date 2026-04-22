@@ -10,6 +10,17 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+### Changed
+- `VisionCapture.__init__` now accepts a `hailo_enabled` parameter that controls
+  shared VDevice creation, replacing the previous `detection_mode == "yolo"` gate.
+  This decouples Hailo infrastructure availability from model-level decisions
+  about which components use the NPU. Preserves all existing functionality;
+  resolves the issue where `detection_mode: "fixed_crop"` could not share a
+  VDevice with the Hailo classifier path. See
+  `docs/investigations/hailo-2026-04-22.md` for full context.
+
+---
+
 ### Phase 8 — Observation Logging for Full Classification Stream (PR #51 feat/log-suppressed-observations)
 
 #### Added
