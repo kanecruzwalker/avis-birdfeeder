@@ -10,6 +10,136 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+### Phase 8 — Observation Logging for Full Classification Stream (PR #51 feat/log-suppressed-observations)
+
+#### Added
+- **`BirdObservation.dispatched: bool`** field on the schema, default `True`.
+  When True: observation passed the confidence threshold and cooldown gates
+  and was dispatched via the notifier. When False: observation was classified
+  but suppressed due to sub-threshold confidence or active cooldown. Default
+  True preserves backward compatibility — existing observations.jsonl records
+  without the field deserialize as dispatched=True, matching historical
+  reality where only dispatched observations were logged.
+- **`Notifier.log_suppressed(observation)`** public method. Writes to the
+  same `observations.jsonl` as `dispatch()` but marks `dispatched=False`
+  and produces no user-facing side effects (no push, no webhook, no email,
+  no print). Used by the agent for threshold and cooldown gate failures.
+- **Three new test classes, 12 tests total**: `TestLogSuppressed` (5),
+  `TestDispatchedField` (3), `TestCycleSuppressedLogging` (4) verifying
+  file write behavior, dispatched marking, no side effects, media path
+  preservation, immutability, backward compatibility, and agent wiring.
+
+#### Fixed
+- **Orphan observations** — During April 20 deployment, 5186 of 5624
+  captured frames (92%) had no corresponding entry in observations.jsonl.
+  Frames were captured, classified, and fused, but when
+  `BirdAgent._cycle()` returned early from the confidence threshold or
+  cooldown gate, the observation object was garbage-collected with only a
+  DEBUG log line. This made it impossible to analyze visual classifier
+  behavior on real bird events that were simply below the user-notification
+  threshold (confidence 0.20 at testing level). PR #50's color and focus
+  fixes could not be measured against the April 20 baseline because only
+  the tip of the iceberg was in the log.
+
+#### Changed
+- **`BirdAgent._cycle()`** restructured to populate media paths
+  (`audio_path`, `image_path`, `image_path_2`) BEFORE the threshold gate
+  so suppressed observations retain image/audio references for later
+  analysis. Threshold gate failure now calls `notifier.log_suppressed()`
+  instead of returning None silently. Cooldown gate failure now calls
+  `notifier.log_suppressed()` instead of returning None silently. Dispatch
+  path unchanged — media paths still populated, `notifier.dispatch()`
+  still called.
+- **`Notifier.dispatch()`** now explicitly marks `dispatched=True` via
+  `model_copy` before logging, so the logged record reflects reality.
+
+#### Verification
+- Laptop-side: 116 tests in `tests/notify/test_notifier.py` and
+  `tests/agent/test_bird_agent.py` combined, all passing.
+- Pi-side (April 21 03:58 PDT deploy): service active, new `dispatched`
+  field present on every record, `dispatched=False` records confirmed in
+  live observations.jsonl. In 30-minute indoor window post-deploy: 2
+  dispatched + 110 suppressed = 112 classifications logged, vs. ~2 that
+  would have been logged pre-PR. 55× increase in log visibility.
+
+#### Backward compatibility
+- `observations.jsonl` consumers that don't know about `dispatched` field
+  see additional records with `dispatched: false`; they can ignore the
+  field and treat all records as before
+- `observation_tools.py` LLM agent tools can filter `dispatched=True` to
+  preserve existing "user saw it" semantics
+- Pre-PR records loaded from `observations.jsonl` deserialize with
+  `dispatched=True` by default, matching their historical meaning
+
+### Test count
+- 616 passing, 6 deselected (hardware), CI green
+
+---
+
+### Phase 8 — Vision Color Format and Continuous Autofocus (PR #50 fix/vision-color-and-focus)
+
+#### Fixed
+- **BGR/RGB color channel swap** — picamera2's `RGB888` format returns
+  bytes in B-G-R order in the numpy array, a long-standing libcamera
+  convention. Every frame fed to the frozen EfficientNet (trained on
+  NABirds RGB) had red and blue channels swapped. Confirmed by observing
+  that orange feeder peels appeared blue in saved PNGs — the direct
+  signature of an R↔B swap. Classifier was being given systematically
+  miscolored inputs throughout Phase 5-8 evaluation.
+
+- **Fixed infinity focus** — Pi Camera Module 3 autofocus was never
+  configured. libcamera defaults to manual focus at lens position 0.0
+  (infinity). Birds at the feeder sit ~30cm from the lens (macro range),
+  well outside the fixed focus plane, producing soft captures throughout
+  Phase 5-8 evaluation.
+
+Together these explain the observation-log pattern of audio detecting
+real birds at 0.80+ confidence while vision returns scene-floor
+predictions on the same frames.
+
+#### Changed
+- **`src/vision/capture.py`** — `_open_cameras()`:
+  - Switch format from `RGB888` to `BGR888` (true RGB memory layout —
+    libcamera's `BGR888` string maps to R-G-B byte order in the numpy
+    array, inverse of intuition)
+  - Add `libcamera.controls.AfModeEnum.Continuous` on both cameras after
+    configure
+  - Graceful fallback if libcamera/AF unavailable (logs warning, continues
+    with fixed focus)
+  - Comprehensive docstring explaining both gotchas for future contributors
+
+#### Verification
+- Laptop-side: all existing tests in `tests/vision/test_capture.py` pass.
+- Pi live validation prior to merge: `test_pr50_live.py` against both
+  cameras — both opened successfully, `AfMode.Continuous` accepted by
+  both sensors, autofocus confirmed active (cam0 LensPosition observed
+  moving 2.20 → 2.07 → 1.80 across 3 frames — lens physically hunting).
+  Visual color inspection of saved PNGs shows true-to-life colors.
+- Post-merge production validation (April 21 03:17 PDT): journalctl
+  confirms `Continuous autofocus enabled on cam0`, `Continuous autofocus
+  enabled on cam1`, `Both cameras opened and started`. Service stable.
+
+#### Known limitations
+- Does NOT address crop region coverage. Static per-camera crops
+  (`feeder_crop_cam0` = `{x:630, y:130, w:700, h:580}`,
+  `feeder_crop_cam1` = `{x:420, y:130, w:700, h:580}`) remain fixed.
+  Birds that land outside the crop are invisible to the classifier
+  regardless of color or focus correction. Phase 8+ option:
+  bird-detection-gate architectural change making YOLO always-on rather
+  than A/B.
+
+#### Expected impact
+- EfficientNet trained on RGB now receives RGB (previously received BGR).
+  Feature extraction should align with training distribution.
+- Feeder-distance birds now in focus plane. Feather patterns, head shape,
+  eye rings legible for classifier.
+- Empirical validation pending April 21 daylight bird activity.
+
+### Test count
+- 616 passing (unchanged), 6 deselected, CI green
+
+---
+
 ### Phase 8 — Notifier Network Resilience (PR #49 fix/notifier-timeout-and-retry)
 
 #### Fixed
