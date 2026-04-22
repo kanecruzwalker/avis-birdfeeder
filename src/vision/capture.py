@@ -48,6 +48,22 @@ Config keys consumed:
     hardware.yaml: cameras.*, hailo.detection_mode, hailo.models.yolo_hef,
                    hailo.yolo.*
     paths.yaml:    captures.images
+
+Hailo configuration semantics:
+    hailo.enabled          — If True, creates a shared VDevice at init for any
+                              Hailo-backed inference (classifier, detector).
+                              If False, no VDevice is created; all inference
+                              runs on CPU. This is the primary "use the NPU?"
+                              switch.
+    hailo.detection_mode   — Controls the classifier's crop source. "fixed_crop"
+                              uses the static feeder ROI; "yolo" uses the bird
+                              detection bounding box. Does NOT control whether
+                              the detector runs — the detector always runs as a
+                              bird-presence gate when Branch 2 is complete.
+    hailo.models.yolo_hef  — Path to a YOLO HEF file. Only consumed when the
+                              detector backend is Hailo (see Branch 5 future
+                              work). Currently deprecated in favor of CPU YOLO
+                              via ultralytics in Branch 2.
 """
 
 from __future__ import annotations
@@ -185,6 +201,7 @@ class VisionCapture:
         yolo_max_proposals: int = 10,
         yolo_min_bird_confidence: float = 0.25,
         yolo_crop_padding: int = 20,
+        hailo_enabled: bool = False,
         shared_vdevice: object | None = None,
     ) -> None:
         """
@@ -211,6 +228,15 @@ class VisionCapture:
             yolo_max_proposals:     Max YOLO detections per class per frame.
             yolo_min_bird_confidence: Min confidence to accept a bird detection.
             yolo_crop_padding:      Pixels to add around YOLO bounding box.
+            hailo_enabled:          Whether the Hailo NPU is available and should be
+                                    used for any inference. When True, a shared VDevice
+                                    is created  at init time and made available
+                                    to both VisualClassifier (via get_shared_vdevice)
+                                    and HailoDetector (future use when a working
+                                    YOLO HEF is available — see Branch 5 in
+                                    docs/investigations/hailo-2026-04-22.md).
+                                    When False, all inference runs on CPU and no
+                                    VDevice is created.
         """
         self.primary_index = primary_index
         self.secondary_index = secondary_index
@@ -237,6 +263,7 @@ class VisionCapture:
         self.yolo_max_proposals = yolo_max_proposals
         self.yolo_min_bird_confidence = yolo_min_bird_confidence
         self.yolo_crop_padding = yolo_crop_padding
+        self.hailo_enabled = hailo_enabled
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -253,16 +280,38 @@ class VisionCapture:
         self._detector = None
         self._detector_open = False
 
-        # Shared Hailo VDevice — created eagerly if YOLO mode, reused by VisualClassifier.
+        # Shared Hailo VDevice — created  when hailo_enabled is True.
+        # The VDevice is reused by VisualClassifier (for Hailo-accelerated EfficientNet
+        # when VisualClassifier is configured to use it) and will be reused by
+        # HailoDetector when a working YOLO HEF is available (see Branch 5 notes in
+        # docs/investigations/hailo-2026-04-22.md).
+        #
         # ROUND_ROBIN scheduling is required for the InferModel API (HailoRT 4.23.0)
         # when multiple models share a VDevice — see _create_shared_vdevice() docstring.
+        #
+        # This used to be gated on `detection_mode == "yolo"`, which meant fixed_crop
+        # mode runs created no VDevice and the classifier had to create its own if it
+        # wanted Hailo. The new condition decouples infrastructure (Hailo available?)
+        # from model-level decisions (which models run on Hailo?).
         self._shared_vdevice = None
-        if self.detection_mode == DETECTION_MODE_YOLO and self.hailo_yolo_hef:
+        if self.hailo_enabled:
             try:
                 self._shared_vdevice = _create_shared_vdevice()
-                logger.info("Shared Hailo VDevice created (YOLO mode, ROUND_ROBIN scheduler).")
+                logger.info(
+                    "Shared Hailo VDevice created (hailo_enabled=True, "
+                    "ROUND_ROBIN scheduler). Serves classifier and/or detector."
+                )
             except Exception as exc:
-                logger.warning("Could not create shared VDevice: %s", exc)
+                logger.warning(
+                    "Could not create shared VDevice despite hailo_enabled=True: %s. "
+                    "Inference will fall back to CPU.",
+                    exc,
+                )
+        else:
+            logger.info(
+                "Hailo disabled (hailo_enabled=False) — no shared VDevice created. "
+                "All inference will run on CPU."
+            )
 
         logger.info(
             "VisionCapture initialized | cameras=[%d, %d] resolution=%dx%d "
@@ -310,8 +359,11 @@ class VisionCapture:
         crop0 = cam.get("feeder_crop_cam0", crop)
         crop1 = cam.get("feeder_crop_cam1", crop)
 
-        # Read Hailo YOLO config
+        # Read Hailo config. `enabled` controls whether a shared VDevice is created
+        # for Hailo-backed inference; `detection_mode` and yolo_* settings control
+        # how the bird-presence gate and classifier crop strategy behave.
         hailo_cfg = hw.get("hailo", {})
+        hailo_enabled = bool(hailo_cfg.get("enabled", False))
         detection_mode = hailo_cfg.get("detection_mode", DETECTION_MODE_FIXED_CROP)
         hailo_yolo_hef = hailo_cfg.get("models", {}).get("yolo_hef")
         yolo_cfg = hailo_cfg.get("yolo", {})
@@ -340,6 +392,7 @@ class VisionCapture:
             yolo_score_threshold=yolo_cfg.get("score_threshold", 0.25),
             yolo_max_proposals=yolo_cfg.get("max_proposals", 10),
             yolo_min_bird_confidence=yolo_cfg.get("min_bird_confidence", 0.25),
+            hailo_enabled=hailo_enabled,
         )
 
     def _open_cameras(self) -> None:

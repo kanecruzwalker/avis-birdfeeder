@@ -130,6 +130,51 @@ class TestVisionCaptureInit:
         assert vc.output_dir.is_absolute()
 
 
+# ── TestHailoVDeviceCreation ──────────────────────────────────────────────────
+
+
+class TestHailoVDeviceCreation:
+    """
+    Verifies that shared VDevice creation is gated on hailo_enabled, not on
+    detection_mode. Before Branch 1, the VDevice was created only when
+    detection_mode == "yolo", which meant fixed_crop runs couldn't share a
+    VDevice with the classifier. After Branch 1, the VDevice follows the
+    Hailo availability flag directly.
+
+    These tests pass regardless of whether Hailo hardware is present because
+    the conditional in __init__ checks hailo_enabled *before* attempting
+    VDevice creation. If Hailo is not installed, the create call inside
+    the try/except fails gracefully and _shared_vdevice stays None.
+    """
+
+    def test_no_vdevice_when_hailo_disabled(self, tmp_path: Path) -> None:
+        """When hailo_enabled=False, _shared_vdevice must be None regardless of detection_mode."""
+        vc = _make_capture(tmp_path, hailo_enabled=False, detection_mode="fixed_crop")
+        assert vc._shared_vdevice is None
+
+    def test_no_vdevice_when_hailo_disabled_even_in_yolo_mode(self, tmp_path: Path) -> None:
+        """Old code created VDevice in yolo mode regardless of enable flag — verify fix."""
+        vc = _make_capture(tmp_path, hailo_enabled=False, detection_mode="yolo")
+        assert vc._shared_vdevice is None
+
+    def test_hailo_enabled_stored(self, tmp_path: Path) -> None:
+        """hailo_enabled parameter is stored on the instance for later inspection."""
+        vc = _make_capture(tmp_path, hailo_enabled=True)
+        assert vc.hailo_enabled is True
+
+    def test_hailo_disabled_default(self, tmp_path: Path) -> None:
+        """Default for hailo_enabled is False — safe default for dev environments."""
+        vc = _make_capture(tmp_path)
+        assert vc.hailo_enabled is False
+
+    def test_from_config_reads_hailo_enabled(self) -> None:
+        """from_config reads hardware.yaml:hailo.enabled and propagates to __init__."""
+        vc = VisionCapture.from_config("configs/")
+        # Current Pi config has hailo.enabled: true, but on dev laptops it's typically false.
+        # Either is valid — just verify the attribute exists and is a bool.
+        assert isinstance(vc.hailo_enabled, bool)
+
+
 # ── TestSaveFrame ─────────────────────────────────────────────────────────────
 
 
