@@ -151,6 +151,20 @@ hailo:
 
   detection_mode: "fixed_crop" # "fixed_crop" or "yolo" - set "yolo" locally on Pi
 
+  # Adaptive crop parameters (only used when detection_mode = "yolo")
+  # When the YOLO bbox dimension is smaller than adaptive_min_bbox_dim on
+  # either axis, the classifier input is expanded to a centered square of
+  # adaptive_centered_size × adaptive_centered_size pixels. Large bboxes
+  # (both dims >= adaptive_min_bbox_dim) use the tight YOLO crop directly.
+  #
+  # These values are tuned for a feeder camera setup where small birds
+  # (finches, sparrows) produce bboxes ~120-200 px and large birds (crows,
+  # doves) produce bboxes ~300+ px. The 300 px centered square gives the
+  # classifier enough environment context to match NABirds training
+  # distribution.
+  adaptive_min_bbox_dim: 250
+  adaptive_centered_size: 300
+
 
 # ── Bird-presence detector configuration (Branch 2, Phase 8) ─────────────────
 # Controls the gate that runs between motion detection and species
