@@ -67,6 +67,15 @@ from src.agent.bird_agent import BirdAgent
 from src.agent.bird_analyst_agent import BirdAnalystAgent  # noqa: F401
 from src.notify.report_builder import ReportBuilder
 
+# Optional sdnotify: systemd watchdog integration. Graceful no-op when not
+# running under systemd (dev/test environments, laptop runs, CI).
+try:
+    import sdnotify  # type: ignore[import-untyped]
+    _SDNOTIFY_AVAILABLE = True
+except ImportError:
+    sdnotify = None  # type: ignore[assignment]
+    _SDNOTIFY_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 # Sentinel used when a/b mode list isn't configured
@@ -234,6 +243,79 @@ class ExperimentOrchestrator:
     # ── Public interface ──────────────────────────────────────────────────────
 
     def run(self) -> None:
+        """
+        Start the orchestrated agent loop.
+
+        Sequence on first call:
+            1. Set initial detection mode on VisionCapture
+            2. Wait startup_delay_seconds for background model to warm up
+            3. Push "Avis is live" notification
+            4. Arm systemd watchdog (if available)
+            5. Enter main loop (calls _run_cycle() on each BirdAgent tick,
+               emitting a watchdog heartbeat after each cycle)
+
+        The loop runs until KeyboardInterrupt or stop() is called.
+        Cleans up via BirdAgent (which calls VisionCapture.stop()) on exit.
+        """
+        self._running = True
+        self._boot_time = datetime.now(UTC)
+        self._window_start = datetime.now(UTC)
+
+        # ── Boot sequence ─────────────────────────────────────────────────────
+        logger.info("ExperimentOrchestrator boot sequence starting.")
+
+        # Apply initial detection mode
+        initial_mode = self.ab_modes[self._current_mode_idx]
+        self._apply_detection_mode(initial_mode)
+
+        # Give picamera2 and background model a moment to initialise
+        logger.info(
+            "Waiting %.0fs for hardware warm-up before live notification...",
+            self.startup_delay_seconds,
+        )
+        time.sleep(self.startup_delay_seconds)
+
+        # "Avis is live" push — first human-visible signal after boot
+        self._push_startup_notification(initial_mode)
+
+        # ── Systemd watchdog ──────────────────────────────────────────────────
+        # READY=1 notifies systemd the service is fully up. WATCHDOG=1 is
+        # emitted after each cycle as a heartbeat. If heartbeats stop for
+        # longer than WatchdogSec (set in systemd unit override), systemd
+        # restarts the service. Protects against silent deadlocks and hangs
+        # on blocking network calls (Pushover, Gemini).
+        systemd_notifier = (
+            sdnotify.SystemdNotifier() if _SDNOTIFY_AVAILABLE else None
+        )
+        if systemd_notifier is not None:
+            systemd_notifier.notify("READY=1")
+            logger.info(
+                "Systemd watchdog notifier armed (heartbeat per cycle).",
+            )
+        else:
+            logger.debug(
+                "sdnotify unavailable — running without systemd watchdog.",
+            )
+
+        # ── Main loop ─────────────────────────────────────────────────────────
+        logger.info("Entering main orchestration loop.")
+        try:
+            while self._running:
+                self._run_cycle()
+                if systemd_notifier is not None:
+                    systemd_notifier.notify("WATCHDOG=1")
+                time.sleep(self.agent.loop_interval_seconds)
+        except KeyboardInterrupt:
+            logger.info("ExperimentOrchestrator interrupted by user.")
+        finally:
+            self._running = False
+            if systemd_notifier is not None:
+                systemd_notifier.notify("STOPPING=1")
+            # BirdAgent.run() normally handles cleanup, but since we're
+            # calling _cycle() directly we clean up here instead.
+            if self.agent.vision_capture is not None:
+                self.agent.vision_capture.stop()
+            logger.info("ExperimentOrchestrator stopped.")
         """
         Start the orchestrated agent loop.
 

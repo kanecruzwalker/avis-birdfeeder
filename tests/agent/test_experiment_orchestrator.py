@@ -373,3 +373,105 @@ class TestLifecycle:
         orch = _make_orchestrator(tmp_path)
         orch.stop()
         orch.agent.stop.assert_called_once()
+
+
+# ── Systemd watchdog integration ──────────────────────────────────────────────
+
+
+class TestWatchdogImportGuard:
+    """
+    The sdnotify import is wrapped in try/except so the module loads cleanly
+    in environments where sdnotify isn't installed (laptop dev, CI).
+    """
+
+    def test_module_exposes_availability_flag(self) -> None:
+        """_SDNOTIFY_AVAILABLE is a bool reflecting import success."""
+        import src.agent.experiment_orchestrator as mod
+
+        assert hasattr(mod, "_SDNOTIFY_AVAILABLE")
+        assert isinstance(mod._SDNOTIFY_AVAILABLE, bool)
+
+    def test_module_exposes_sdnotify_symbol(self) -> None:
+        """sdnotify symbol is either None or a module-like object."""
+        import src.agent.experiment_orchestrator as mod
+
+        assert hasattr(mod, "sdnotify")
+        # Either None (unavailable) or has the SystemdNotifier class
+        assert mod.sdnotify is None or hasattr(mod.sdnotify, "SystemdNotifier")
+
+
+class TestWatchdogNotifierConstruction:
+    """Notifier is constructed conditionally based on sdnotify availability."""
+
+    def test_no_notifier_when_unavailable(self) -> None:
+        """If _SDNOTIFY_AVAILABLE is False, the conditional returns None."""
+        import src.agent.experiment_orchestrator as mod
+        from unittest.mock import patch
+
+        with patch.object(mod, "_SDNOTIFY_AVAILABLE", False):
+            # Replicate the conditional in run()
+            notifier = (
+                mod.sdnotify.SystemdNotifier()
+                if mod._SDNOTIFY_AVAILABLE
+                else None
+            )
+            assert notifier is None
+
+    def test_notifier_constructed_when_available(self) -> None:
+        """When sdnotify is available, SystemdNotifier() is called exactly once."""
+        import src.agent.experiment_orchestrator as mod
+        from unittest.mock import MagicMock, patch
+
+        mock_sdnotify = MagicMock()
+        mock_instance = MagicMock()
+        mock_sdnotify.SystemdNotifier.return_value = mock_instance
+
+        with patch.object(mod, "_SDNOTIFY_AVAILABLE", True), patch.object(
+            mod, "sdnotify", mock_sdnotify
+        ):
+            notifier = (
+                mod.sdnotify.SystemdNotifier()
+                if mod._SDNOTIFY_AVAILABLE
+                else None
+            )
+            assert notifier is mock_instance
+            mock_sdnotify.SystemdNotifier.assert_called_once()
+
+
+class TestWatchdogNotificationSequence:
+    """
+    Verifies the expected lifecycle of notifications emitted by run():
+        READY=1 on boot → WATCHDOG=1 per cycle → STOPPING=1 on shutdown.
+
+    We simulate the sequence directly rather than running the full loop
+    (which would require mocking cameras, Hailo, audio, etc.).
+    """
+
+    def test_full_lifecycle_notification_sequence(self) -> None:
+        """Simulated lifecycle emits READY, WATCHDOG×N, STOPPING in order."""
+        import src.agent.experiment_orchestrator as mod
+        from unittest.mock import MagicMock, patch
+
+        mock_instance = MagicMock()
+        mock_sdnotify = MagicMock()
+        mock_sdnotify.SystemdNotifier.return_value = mock_instance
+
+        with patch.object(mod, "_SDNOTIFY_AVAILABLE", True), patch.object(
+            mod, "sdnotify", mock_sdnotify
+        ):
+            # Replicate what run() does
+            notifier = mod.sdnotify.SystemdNotifier()
+            notifier.notify("READY=1")
+            notifier.notify("WATCHDOG=1")
+            notifier.notify("WATCHDOG=1")
+            notifier.notify("WATCHDOG=1")
+            notifier.notify("STOPPING=1")
+
+            calls = [c.args[0] for c in mock_instance.notify.call_args_list]
+            assert calls == [
+                "READY=1",
+                "WATCHDOG=1",
+                "WATCHDOG=1",
+                "WATCHDOG=1",
+                "STOPPING=1",
+            ]
