@@ -405,35 +405,30 @@ class TestWatchdogNotifierConstruction:
 
     def test_no_notifier_when_unavailable(self) -> None:
         """If _SDNOTIFY_AVAILABLE is False, the conditional returns None."""
-        import src.agent.experiment_orchestrator as mod
         from unittest.mock import patch
+
+        import src.agent.experiment_orchestrator as mod
 
         with patch.object(mod, "_SDNOTIFY_AVAILABLE", False):
             # Replicate the conditional in run()
-            notifier = (
-                mod.sdnotify.SystemdNotifier()
-                if mod._SDNOTIFY_AVAILABLE
-                else None
-            )
+            notifier = mod.sdnotify.SystemdNotifier() if mod._SDNOTIFY_AVAILABLE else None
             assert notifier is None
 
     def test_notifier_constructed_when_available(self) -> None:
         """When sdnotify is available, SystemdNotifier() is called exactly once."""
-        import src.agent.experiment_orchestrator as mod
         from unittest.mock import MagicMock, patch
+
+        import src.agent.experiment_orchestrator as mod
 
         mock_sdnotify = MagicMock()
         mock_instance = MagicMock()
         mock_sdnotify.SystemdNotifier.return_value = mock_instance
 
-        with patch.object(mod, "_SDNOTIFY_AVAILABLE", True), patch.object(
-            mod, "sdnotify", mock_sdnotify
+        with (
+            patch.object(mod, "_SDNOTIFY_AVAILABLE", True),
+            patch.object(mod, "sdnotify", mock_sdnotify),
         ):
-            notifier = (
-                mod.sdnotify.SystemdNotifier()
-                if mod._SDNOTIFY_AVAILABLE
-                else None
-            )
+            notifier = mod.sdnotify.SystemdNotifier() if mod._SDNOTIFY_AVAILABLE else None
             assert notifier is mock_instance
             mock_sdnotify.SystemdNotifier.assert_called_once()
 
@@ -449,15 +444,17 @@ class TestWatchdogNotificationSequence:
 
     def test_full_lifecycle_notification_sequence(self) -> None:
         """Simulated lifecycle emits READY, WATCHDOG×N, STOPPING in order."""
-        import src.agent.experiment_orchestrator as mod
         from unittest.mock import MagicMock, patch
+
+        import src.agent.experiment_orchestrator as mod
 
         mock_instance = MagicMock()
         mock_sdnotify = MagicMock()
         mock_sdnotify.SystemdNotifier.return_value = mock_instance
 
-        with patch.object(mod, "_SDNOTIFY_AVAILABLE", True), patch.object(
-            mod, "sdnotify", mock_sdnotify
+        with (
+            patch.object(mod, "_SDNOTIFY_AVAILABLE", True),
+            patch.object(mod, "sdnotify", mock_sdnotify),
         ):
             # Replicate what run() does
             notifier = mod.sdnotify.SystemdNotifier()

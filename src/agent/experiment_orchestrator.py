@@ -71,6 +71,7 @@ from src.notify.report_builder import ReportBuilder
 # running under systemd (dev/test environments, laptop runs, CI).
 try:
     import sdnotify  # type: ignore[import-untyped]
+
     _SDNOTIFY_AVAILABLE = True
 except ImportError:
     sdnotify = None  # type: ignore[assignment]
@@ -256,6 +257,9 @@ class ExperimentOrchestrator:
 
         The loop runs until KeyboardInterrupt or stop() is called.
         Cleans up via BirdAgent (which calls VisionCapture.stop()) on exit.
+
+        Watchdog deployment requires a systemd unit override on the Pi.
+        See docs/deployment.md → "Systemd watchdog" for setup and verification.
         """
         self._running = True
         self._boot_time = datetime.now(UTC)
@@ -284,9 +288,7 @@ class ExperimentOrchestrator:
         # longer than WatchdogSec (set in systemd unit override), systemd
         # restarts the service. Protects against silent deadlocks and hangs
         # on blocking network calls (Pushover, Gemini).
-        systemd_notifier = (
-            sdnotify.SystemdNotifier() if _SDNOTIFY_AVAILABLE else None
-        )
+        systemd_notifier = sdnotify.SystemdNotifier() if _SDNOTIFY_AVAILABLE else None
         if systemd_notifier is not None:
             systemd_notifier.notify("READY=1")
             logger.info(

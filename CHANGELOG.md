@@ -10,6 +10,17 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+### Added
+- Systemd watchdog integration for service self-healing. The orchestrator now
+  emits `READY=1`, `WATCHDOG=1` per cycle, and `STOPPING=1` signals via
+  sdnotify. Pairs with a systemd service override (`WatchdogSec=300`,
+  `Restart=always`) to automatically restart the service if it stops
+  heartbeating for 5 minutes. Graceful no-op when sdnotify is unavailable.
+  Added `sdnotify>=0.3.2` to `requirements-pi.txt`. See
+  `docs/deployment.md` → "Systemd watchdog" for Pi setup.
+
+---
+
 ### Phase 8 — Bird-Presence Gate (Branch 2)
 
 #### Added
