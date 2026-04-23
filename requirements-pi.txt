@@ -54,3 +54,4 @@ python-dotenv==1.0.1
 ultralytics>=8.4.0
 
 
+sdnotify>=0.3.2

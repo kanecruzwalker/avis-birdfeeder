@@ -122,7 +122,52 @@ That installs `scripts/avis.service` to `/etc/systemd/system/`, enables it so
 it starts on every boot, and starts it now. The Pi will boot autonomously
 into the Avis system going forward — no SSH or manual commands needed.
 
-### 8. Verify from the laptop
+
+### 7. Install and start the systemd service
+
+```bash
+bash scripts/install_service.sh
+```
+
+That installs `scripts/avis.service` to `/etc/systemd/system/`, enables it so
+it starts on every boot, and starts it now. The Pi will boot autonomously
+into the Avis system going forward — no SSH or manual commands needed.
+
+### 8. Arm the systemd watchdog
+
+The watchdog prevents silent multi-hour freezes by restarting the service if
+it stops heartbeating for 5 minutes. Setup is one-time per Pi.
+
+```bash
+sudo systemctl edit avis.service
+```
+
+In the editor, paste:
+
+```ini
+[Service]
+Restart=always
+RestartSec=30
+WatchdogSec=300
+```
+
+Then:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart avis.service
+```
+
+See the "Systemd watchdog" section below for details and verification.
+
+### 9. Verify from the laptop
+
+
+
+
+
+
+### 9. Verify from the laptop
 
 In PowerShell on the laptop:
 
@@ -295,6 +340,117 @@ pi-config-check
 
 ---
 
+
+---
+
+## Systemd watchdog
+
+The Avis service runs under a watchdog that restarts the process if it stops heartbeating for 5 minutes. This prevents silent freezes in which the service appears `active (running)` but the Python loop has stalled — a failure mode we hit on 2026-04-23 when two multi-hour freezes produced zero observations.
+
+### How it works
+
+Two cooperating pieces:
+
+1. **Application side** — `ExperimentOrchestrator.run()` sends `WATCHDOG=1` to systemd after every cycle via the `sdnotify` package. If the main loop deadlocks or blocks on a network call, the signals stop.
+2. **Systemd side** — the service unit override specifies `WatchdogSec=300`. If systemd doesn't receive a `WATCHDOG=1` within 5 minutes, it kills the process and restarts it.
+
+The result: any silent freeze self-corrects within 5 minutes.
+
+The orchestrator sends three signal types:
+
+| Signal | When | Purpose |
+|---|---|---|
+| `READY=1` | After boot sequence completes | Service is up and ready |
+| `WATCHDOG=1` | After each cycle | Heartbeat — prevents timeout |
+| `STOPPING=1` | In the `finally` block on shutdown | Graceful exit |
+
+The `sdnotify` import is wrapped in try/except so the orchestrator runs cleanly in dev/test environments without sdnotify installed (laptop, CI).
+
+### First-time setup on the Pi
+
+This is done once per Pi deployment. The systemd override is Pi-local infrastructure — it is not committed to the repo.
+
+First, install `sdnotify` in the service venv:
+
+```bash
+source /mnt/data/avis-venv/bin/activate
+pip install sdnotify
+deactivate
+```
+
+Then create the systemd override:
+
+```bash
+sudo systemctl edit avis.service
+```
+
+In the editor that opens, paste:
+
+```ini
+[Service]
+Restart=always
+RestartSec=30
+WatchdogSec=300
+```
+
+Save and exit (in nano: `Ctrl+O`, `Enter`, `Ctrl+X`). Then reload systemd and restart the service:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart avis.service
+```
+
+### Override values explained
+
+- `Restart=always` — restart under any failure condition, not just explicit failure exit codes
+- `RestartSec=30` — wait 30 seconds between exit and restart, giving network/hardware time to recover from transient issues
+- `WatchdogSec=300` — consider the service dead if no `WATCHDOG=1` received within 5 minutes
+
+The 5-minute timeout is deliberately generous. Normal cycle time is 1-5 seconds, so 5 minutes allows ~60 cycles of slack. This avoids false positives during legitimate slow cycles (e.g. Pushover retries on flaky networks) while still catching true deadlocks.
+
+### Verification
+
+After applying the override, confirm the watchdog is armed:
+
+```bash
+sudo journalctl -u avis.service -n 30 --no-pager | grep -i watchdog
+```
+
+You should see: Systemd watchdog notifier armed (heartbeat per cycle).
+
+If you see `sdnotify unavailable — running without systemd watchdog` instead, sdnotify is not installed in the service venv. Fix with the `pip install sdnotify` step above, then restart.
+
+### Testing the watchdog
+
+To prove the watchdog will catch a freeze, simulate one by pausing the process:
+
+```bash
+# Find the Python PID
+ps aux | grep experiment_orchestrator | grep -v grep
+
+# Suspend it (simulates deadlock)
+sudo kill -STOP <PID>
+
+# Watch systemd handle it
+sudo journalctl -u avis.service -f
+```
+
+Within 5 minutes:
+
+avis.service: Watchdog timeout (limit 5min)!
+avis.service: Killing process ...
+avis.service: Main process exited, code=killed, status=6/ABRT
+avis.service: Scheduled restart job, restart counter is at N.
+avis.service: Starting avis.service...
+
+If you see the automatic restart, the watchdog is working correctly.
+
+### History
+
+- **2026-04-23** — Watchdog added in response to two observed silent freezes during Branch 3 adaptive YOLO crop deployment (gaps of 5.3 hours at 06:30-11:46 UTC and 5.9 hours at 14:11-20:07 UTC). Root cause not fully diagnosed; suspected culprits include synchronous Gemini LLM calls, stacked Pushover retries on flaky network, and `ReportBuilder` parsing corrupted JSONL. The watchdog serves as a defense-in-depth measure regardless of the specific cause.
+
+---
+
 ## Troubleshooting
 
 ### Service won't start
@@ -393,6 +549,55 @@ mDNS isn't working on your LAN. Either:
 ### Password prompt on every `pi-*` command
 
 Set up SSH key auth — see "Laptop-side setup" above.
+
+---
+
+
+### Service restarts every ~5 minutes
+
+If the service keeps getting killed and restarted by the watchdog, the Python loop is genuinely stalling within the `WatchdogSec` window. Check logs for the pattern that repeats just before each kill:
+
+```bash
+sudo journalctl -u avis.service --since "30 minutes ago" --no-pager | grep -iE "error|traceback|exception|timeout"
+```
+
+Common culprits during our deployment:
+
+- Long Pushover retry chains (77s timeouts × 3 attempts) when network drops
+- Synchronous Gemini LLM calls hanging with no explicit timeout
+- `ReportBuilder` stuck parsing corrupted JSONL in observations.jsonl
+
+As a temporary mitigation while diagnosing, you can extend the watchdog window:
+
+```bash
+sudo systemctl edit avis.service
+# Change WatchdogSec=300 to WatchdogSec=900 (15 min)
+sudo systemctl daemon-reload
+sudo systemctl restart avis.service
+```
+
+### Watchdog not triggering on freeze
+
+If `sudo kill -STOP <PID>` doesn't lead to an automatic restart within 5 minutes, the watchdog is not armed correctly. Check for these common issues:
+
+1. `sdnotify` is not installed in the venv:
+```bash
+   /mnt/data/avis-venv/bin/python -c "import sdnotify; print(sdnotify.__file__)"
+```
+   If this errors, install it: `source /mnt/data/avis-venv/bin/activate && pip install sdnotify`.
+
+2. The systemd override wasn't reloaded:
+```bash
+   sudo systemctl cat avis.service | grep WatchdogSec
+```
+   If no `WatchdogSec` appears, the override didn't take. Re-run `sudo systemctl edit avis.service`, re-add the override, then `sudo systemctl daemon-reload`.
+
+3. The orchestrator log shows `sdnotify unavailable`. Restart the service after installing sdnotify: `sudo systemctl restart avis.service`.
+
+---
+
+
+---
 
 ### Config drift after `git pull`
 
