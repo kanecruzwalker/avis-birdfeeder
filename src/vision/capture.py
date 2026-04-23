@@ -90,7 +90,7 @@ except ImportError:
     _HailoVDevice = None  # type: ignore[assignment]
     _HailoSchedulingAlgorithm = None  # type: ignore[assignment]
 
-
+from src.vision.detector import BirdDetection
 from src.vision.preprocess import preprocess_frame
 
 logger = logging.getLogger(__name__)
@@ -184,6 +184,11 @@ def _maybe_load_gate_detector(config_dir: str | Path) -> object | None:
 # Detection mode constants
 DETECTION_MODE_FIXED_CROP = "fixed_crop"
 DETECTION_MODE_YOLO = "yolo"
+
+# Default adaptive crop parameters. A bbox smaller than this dimension
+# on either axis is "small" and will be expanded to a centered square.
+_DEFAULT_ADAPTIVE_MIN_BBOX_DIM = 250
+_DEFAULT_ADAPTIVE_CENTERED_SIZE = 300
 
 
 @dataclass
@@ -295,6 +300,8 @@ class VisionCapture:
         hailo_enabled: bool = False,
         shared_vdevice: object | None = None,
         gate_detector: object | None = None,
+        adaptive_min_bbox_dim: int = 250,
+        adaptive_centered_size: int = 300,
     ) -> None:
         """
         Args:
@@ -369,6 +376,10 @@ class VisionCapture:
         # without a detector (notably pre-Branch-2 tests).
         self._gate_detector = gate_detector
         self._gate_detector_open = False
+
+        # Adaptive crop params (only used when detection_mode="yolo")
+        self.adaptive_min_bbox_dim = adaptive_min_bbox_dim
+        self.adaptive_centered_size = adaptive_centered_size
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -473,6 +484,13 @@ class VisionCapture:
         hailo_yolo_hef = hailo_cfg.get("models", {}).get("yolo_hef")
         yolo_cfg = hailo_cfg.get("yolo", {})
 
+        adaptive_min_bbox_dim = int(
+            hailo_cfg.get("adaptive_min_bbox_dim", _DEFAULT_ADAPTIVE_MIN_BBOX_DIM)
+        )
+        adaptive_centered_size = int(
+            hailo_cfg.get("adaptive_centered_size", _DEFAULT_ADAPTIVE_CENTERED_SIZE)
+        )
+
         return cls(
             primary_index=cam["primary_index"],
             secondary_index=cam["secondary_index"],
@@ -499,6 +517,8 @@ class VisionCapture:
             yolo_min_bird_confidence=yolo_cfg.get("min_bird_confidence", 0.25),
             hailo_enabled=hailo_enabled,
             gate_detector=_maybe_load_gate_detector(config_dir),
+            adaptive_min_bbox_dim=adaptive_min_bbox_dim,
+            adaptive_centered_size=adaptive_centered_size,
         )
 
     def _open_cameras(self) -> None:
@@ -658,6 +678,86 @@ class VisionCapture:
 
         return result0, result1
 
+    def _adaptive_yolo_crop(
+        self,
+        raw_frame: np.ndarray,
+        detection: BirdDetection,
+    ) -> np.ndarray:
+        """
+        Produce an adaptive crop from a YOLO detection.
+
+        Strategy:
+            - If the YOLO bbox is large (both dims >= adaptive_min_bbox_dim):
+                use the tight bbox with standard padding.
+            - Otherwise (small bird):
+                expand to a `adaptive_centered_size` × `adaptive_centered_size`
+                square centered on the bbox centroid, clipped to image bounds.
+
+        Rationale:
+            The NABirds-trained classifier expects birds at a resolution and
+            framing similar to its training data — birds that fill roughly
+            40-70% of the input with some natural background context. Tight
+            bounding boxes around small feeder birds produce low-resolution
+            input (e.g. 137x123 pixels) that when upscaled to 224x224 becomes
+            a blurry patch with no context, causing OOD collapse.
+
+            The centered-square approach gives the classifier:
+            - The bird at its original capture resolution (no upscaling artifact)
+            - Some environment context (wood, seed, leaves) it can treat as background
+            - A consistent ~300x300 input regardless of bird size
+
+            Large birds (crows, doves) already fill their YOLO bboxes well, so
+            tight cropping works fine for them.
+
+        Args:
+            raw_frame: Full capture frame, shape (H, W, 3) uint8 RGB.
+            detection: YOLO BirdDetection with bbox coords.
+
+        Returns:
+            Crop to feed to the classifier preprocessor, uint8 RGB.
+            Will be resized to classification_width × classification_height
+            by preprocess_frame downstream.
+        """
+        bbox_w = detection.x2 - detection.x1
+        bbox_h = detection.y2 - detection.y1
+
+        if bbox_w >= self.adaptive_min_bbox_dim and bbox_h >= self.adaptive_min_bbox_dim:
+            # Large bird — tight YOLO crop path (original behavior)
+            logger.debug(
+                "Adaptive crop: LARGE bbox %dx%d → tight yolo crop",
+                bbox_w,
+                bbox_h,
+            )
+            return detection.as_crop(raw_frame, padding=self.yolo_crop_padding)
+
+        # Small bird — centered square crop path
+        h, w = raw_frame.shape[:2]
+        size = self.adaptive_centered_size
+        cx = (detection.x1 + detection.x2) // 2
+        cy = (detection.y1 + detection.y2) // 2
+
+        half = size // 2
+        x1 = max(0, cx - half)
+        y1 = max(0, cy - half)
+        x2 = min(w, x1 + size)
+        y2 = min(h, y1 + size)
+
+        # If we hit an edge and didn't fill the window, shift the start back so
+        # the window stays `size` pixels wherever possible.
+        x1 = max(0, x2 - size)
+        y1 = max(0, y2 - size)
+
+        logger.debug(
+            "Adaptive crop: SMALL bbox %dx%d → centered %dx%d square at (%d,%d)",
+            bbox_w,
+            bbox_h,
+            x2 - x1,
+            y2 - y1,
+            cx,
+            cy,
+        )
+        return raw_frame[y1:y2, x1:x2]
+
     def _process_frame(
         self,
         raw_frame: np.ndarray,
@@ -789,7 +889,9 @@ class VisionCapture:
             # the gate confirmed a bird (the gate's job is bird/no-bird;
             # the crop strategy is an independent A/B experiment).
             if self.detection_mode == DETECTION_MODE_YOLO:
-                crop_to_classify = gate_detection.as_crop(raw_frame, padding=self.yolo_crop_padding)
+                # Adaptive crop: tight bbox for large birds, centered square for small birds.
+                # See _adaptive_yolo_crop for rationale.
+                crop_to_classify = self._adaptive_yolo_crop(raw_frame, gate_detection)
                 detection_mode = DETECTION_MODE_YOLO
                 detection_box = (
                     gate_detection.x1,
@@ -798,13 +900,15 @@ class VisionCapture:
                     gate_detection.y2,
                 )
                 logger.debug(
-                    "Camera %d: gate bird conf=%.3f box=(%d,%d,%d,%d), " "using YOLO crop",
+                    "Camera %d: gate bird conf=%.3f box=(%d,%d,%d,%d), "
+                    "crop_shape=%s (adaptive yolo)",
                     camera_index,
                     gate_detection.confidence,
                     gate_detection.x1,
                     gate_detection.y1,
                     gate_detection.x2,
                     gate_detection.y2,
+                    crop_to_classify.shape,
                 )
             else:
                 logger.debug(

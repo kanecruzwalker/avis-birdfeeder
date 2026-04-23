@@ -587,3 +587,154 @@ class TestProcessFrameGate:
             motion_score=0.07,
         )
         assert result.image_path is None
+
+
+class TestAdaptiveYoloCrop:
+    """
+    Tests for the adaptive yolo crop logic in VisionCapture.
+
+    The adaptive crop chooses between two strategies based on bbox size:
+        - Large bbox: tight YOLO crop with padding (original behavior)
+        - Small bbox: centered square of min size (new behavior)
+    """
+
+    def _make_capture(self, **overrides):
+        """Build a minimal VisionCapture for testing (no cameras opened)."""
+        defaults = dict(
+            primary_index=0,
+            secondary_index=1,
+            capture_width=1536,
+            capture_height=864,
+            capture_fps=120,
+            classification_width=224,
+            classification_height=224,
+            crop_x=630,
+            crop_y=130,
+            crop_width=700,
+            crop_height=580,
+            motion_threshold=0.005,
+            background_history=10,
+            output_dir="/tmp/avis-test",
+            detection_mode="yolo",
+            hailo_enabled=False,  # do not create Hailo VDevice
+            hailo_yolo_hef=None,
+            yolo_score_threshold=0.3,
+            yolo_max_proposals=50,
+            yolo_min_bird_confidence=0.15,
+            yolo_crop_padding=20,
+            adaptive_min_bbox_dim=250,
+            adaptive_centered_size=300,
+        )
+        defaults.update(overrides)
+        return VisionCapture(**defaults)
+
+    def _make_detection(self, x1, y1, x2, y2, confidence=0.9):
+        """Build a BirdDetection at the given bbox."""
+        from src.vision.detector import BirdDetection
+
+        return BirdDetection(
+            x1=x1,
+            y1=y1,
+            x2=x2,
+            y2=y2,
+            confidence=confidence,
+        )
+
+    def test_large_bbox_uses_tight_crop(self):
+        """When bbox is larger than adaptive_min_bbox_dim on both axes,
+        the tight YOLO crop path is used (standard bbox + padding).
+        """
+        capture = self._make_capture()
+        frame = np.random.randint(0, 255, (864, 1536, 3), dtype=np.uint8)
+        # Large bbox: 400x350
+        det = self._make_detection(500, 300, 900, 650)
+
+        crop = capture._adaptive_yolo_crop(frame, det)
+
+        # With 20px padding, expect ~440 x ~390 crop
+        assert crop.shape[0] >= 350
+        assert crop.shape[0] <= 400
+        assert crop.shape[1] >= 400
+        assert crop.shape[1] <= 450
+        # Content should be the bbox region, not the full frame
+        assert crop.shape[0] < frame.shape[0]
+        assert crop.shape[1] < frame.shape[1]
+
+    def test_small_bbox_uses_centered_square(self):
+        """When bbox is smaller than adaptive_min_bbox_dim on either axis,
+        expand to centered square of adaptive_centered_size.
+        """
+        capture = self._make_capture()
+        frame = np.random.randint(0, 255, (864, 1536, 3), dtype=np.uint8)
+        # Small bbox: 150x120, centroid at (775, 432)
+        det = self._make_detection(700, 372, 850, 492)
+
+        crop = capture._adaptive_yolo_crop(frame, det)
+
+        # Should be exactly 300x300 (or close to it, clipped if near edge)
+        assert crop.shape[0] == 300
+        assert crop.shape[1] == 300
+
+    def test_small_bbox_near_top_edge_shifts_window(self):
+        """A small bbox near the image edge produces a 300x300 window
+        shifted to stay within image bounds.
+        """
+        capture = self._make_capture()
+        frame = np.random.randint(0, 255, (864, 1536, 3), dtype=np.uint8)
+        # Small bbox centered at y=20 (top edge) — window can't center there
+        det = self._make_detection(100, 5, 200, 40)
+
+        crop = capture._adaptive_yolo_crop(frame, det)
+
+        # Window should clip at image top, start at y=0
+        assert crop.shape[0] == 300  # Still 300 tall
+        assert crop.shape[1] == 300  # Still 300 wide
+
+    def test_small_bbox_near_corner_clips_both_axes(self):
+        """A small bbox in the corner produces a smaller clipped window."""
+        capture = self._make_capture()
+        frame = np.random.randint(0, 255, (400, 400, 3), dtype=np.uint8)
+        # Small bbox centered at (10, 10) — very close to top-left corner
+        det = self._make_detection(0, 0, 30, 30)
+
+        crop = capture._adaptive_yolo_crop(frame, det)
+
+        # Window starts at (0, 0), size up to 300, clipped by image
+        # Image is 400x400 so there's room for 300x300 starting at (0, 0)
+        assert crop.shape[0] == 300
+        assert crop.shape[1] == 300
+
+    def test_asymmetric_bbox_large_one_dim_small_other(self):
+        """If only one dimension is below threshold, we take the centered
+        square path (any small dim triggers expansion).
+        """
+        capture = self._make_capture()
+        frame = np.random.randint(0, 255, (864, 1536, 3), dtype=np.uint8)
+        # Wide but short bbox: 400x100 (very common for flying birds)
+        det = self._make_detection(500, 400, 900, 500)
+
+        crop = capture._adaptive_yolo_crop(frame, det)
+
+        # Expect 300x300 centered square (height was too small)
+        assert crop.shape[0] == 300
+        assert crop.shape[1] == 300
+
+    def test_custom_adaptive_params(self):
+        """Adaptive params should be configurable per VisionCapture."""
+        capture = self._make_capture(
+            adaptive_min_bbox_dim=150,
+            adaptive_centered_size=400,
+        )
+        frame = np.random.randint(0, 255, (1500, 1500, 3), dtype=np.uint8)
+        # bbox 200x200 — above 150 threshold, so tight crop
+        det = self._make_detection(500, 500, 700, 700)
+
+        crop = capture._adaptive_yolo_crop(frame, det)
+        assert crop.shape[0] <= 240 + 1  # 200 + 2*20 padding
+        assert crop.shape[1] <= 240 + 1
+
+        # Now a bbox smaller than custom threshold
+        det_small = self._make_detection(500, 500, 600, 600)  # 100x100 < 150
+        crop_small = capture._adaptive_yolo_crop(frame, det_small)
+        assert crop_small.shape[0] == 400
+        assert crop_small.shape[1] == 400
