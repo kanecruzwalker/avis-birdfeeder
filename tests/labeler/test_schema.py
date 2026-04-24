@@ -3,9 +3,10 @@
 Tests Pydantic validation logic, species code normalization, and the
 shape of the persisted records. No Gemini calls here.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from pydantic import ValidationError
@@ -155,7 +156,7 @@ class TestPreLabel:
         assert p.audio_confidence == 0.85
 
     def test_labeled_at_defaults_to_now(self) -> None:
-        before = datetime.now(timezone.utc)
+        before = datetime.now(UTC)
         p = PreLabel(
             image_path="/fake/path/img.png",
             image_filename="img.png",
@@ -164,7 +165,7 @@ class TestPreLabel:
             prompt_version="v1.0",
             elapsed_seconds=2.5,
         )
-        after = datetime.now(timezone.utc)
+        after = datetime.now(UTC)
         assert before <= p.labeled_at <= after
 
     def test_serialises_to_json_round_trip(self) -> None:

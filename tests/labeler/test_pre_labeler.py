@@ -3,14 +3,13 @@
 Tests helpers (timestamp parsing, observation indexing, resume logic)
 and the batch loop with a mocked Gemini model. No real API calls.
 """
+
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock
-
-import pytest
 
 from tools.labeler.pre_labeler import (
     MIN_AUDIO_HINT_CONFIDENCE,
@@ -19,7 +18,7 @@ from tools.labeler.pre_labeler import (
     load_already_labeled,
     parse_capture_timestamp,
 )
-from tools.labeler.schema import PreLabel, PreLabelResponse
+from tools.labeler.schema import PreLabelResponse
 
 
 class TestParseCaptureTimestamp:
@@ -35,7 +34,7 @@ class TestParseCaptureTimestamp:
         assert ts.minute == 16
         assert ts.second == 5
         assert ts.microsecond == 420369
-        assert ts.tzinfo == timezone.utc
+        assert ts.tzinfo == UTC
 
     def test_cam1_also_parses(self) -> None:
         ts = parse_capture_timestamp("20260424_141605_420369_cam1.png")
@@ -174,9 +173,7 @@ class TestLoadAlreadyLabeled:
     def test_malformed_line_skipped(self, tmp_path: Path) -> None:
         p = tmp_path / "pre_labels.jsonl"
         p.write_text(
-            '{"image_filename": "img1.png"}\n'
-            "invalid json\n"
-            '{"image_filename": "img2.png"}\n',
+            '{"image_filename": "img1.png"}\n' "invalid json\n" '{"image_filename": "img2.png"}\n',
             encoding="utf-8",
         )
         result = load_already_labeled(p)
@@ -316,7 +313,7 @@ class TestPreLabelerBatchLoop:
             observations_path=None,
             output_path=output,
             limit=10,
-            min_capture_time=datetime(2026, 4, 22, tzinfo=timezone.utc),
+            min_capture_time=datetime(2026, 4, 22, tzinfo=UTC),
         )
         assert summary["succeeded"] == 1
         assert summary["skipped_too_old"] == 1
