@@ -10,6 +10,28 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Added
+- Upgraded camera capture from 1536×864 @ 120fps to 2304×1296 @ 30fps
+  (IMX708 binned mode) to provide 2.25× more pixels per bird as input
+  to the classifier. All `feeder_crop` coordinates rescaled 1.5× to
+  preserve the real-world framing at the new pixel grid. Investigation
+  rationale, hypothesis, and success criteria documented in
+  `docs/camera-quality-2026-04-23.md`.
+
+### Changed
+- `configs/hardware.yaml`: `capture_width`/`capture_height`/`capture_fps`
+  and all three `feeder_crop*` blocks updated to the new 2× coordinate
+  system. Real-world feeder framing is preserved.
+- `scripts/dev_config.py`: `PI_OVERRIDES` for `feeder_crop_cam0` and
+  `feeder_crop_cam1` rescaled to match the new capture resolution.
+- `tests/vision/test_capture.py`: module-level capture dimension constants
+  updated to match new defaults. `TestAdaptiveYoloCrop` retained original
+  1536×864 fixture dimensions (tests are resolution-independent math).
+
+---
+
 ### Added
 - Systemd watchdog integration for service self-healing. The orchestrator now
   emits `READY=1`, `WATCHDOG=1` per cycle, and `STOPPING=1` signals via
