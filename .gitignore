@@ -77,3 +77,14 @@ Thumbs.db
 
 # ── Config override backups (created by scripts/dev_config.py) ────────────────
 configs/*.yaml.bak
+
+
+# Labeling assistant outputs (dev-time)
+data/labels/
+data/smoke_test_images/
+
+# Temporary smoke-test artefacts
+inspect_smoke_test.py
+smoke_test_ground_truth.json
+test_frame.png
+test_gemini_vision.py
