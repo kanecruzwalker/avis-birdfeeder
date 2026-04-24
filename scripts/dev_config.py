@@ -68,15 +68,20 @@ PI_OVERRIDES: list[tuple[str, tuple[str, ...], Any]] = [
     # on Kane's feeder as of 2026-04-19. If the cameras are re-mounted or
     # moved to a different feeder, re-run scripts/capture_test_frame.py and
     # update these values.
+    # Feeder crop coordinates — scaled 1.5x on 2026-04-23 to match the
+    # 2304x1296 capture upgrade. The real-world feeder area these capture
+    # is unchanged; coordinates only rescaled to the new raw frame size.
+    # If the cameras are re-mounted or moved, re-run
+    # scripts/capture_test_frame.py and update these values.
     (
         "configs/hardware.yaml",
         ("cameras", "feeder_crop_cam0"),
-        {"x": 630, "y": 130, "width": 700, "height": 580},
+        {"x": 945, "y": 195, "width": 1050, "height": 870},
     ),
     (
         "configs/hardware.yaml",
         ("cameras", "feeder_crop_cam1"),
-        {"x": 420, "y": 130, "width": 700, "height": 580},
+        {"x": 630, "y": 195, "width": 1050, "height": 870},
     ),
     # notify.yaml — enable mobile push notifications
     ("configs/notify.yaml", ("channels", "push"), True),

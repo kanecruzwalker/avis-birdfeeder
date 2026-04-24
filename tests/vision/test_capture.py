@@ -34,8 +34,8 @@ from src.vision.capture import CaptureResult, VisionCapture
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 # Matches hardware.yaml defaults
-_CAPTURE_W, _CAPTURE_H = 1536, 864
-_CROP_X, _CROP_Y, _CROP_W, _CROP_H = 568, 232, 400, 400
+_CAPTURE_W, _CAPTURE_H = 2304, 1296
+_CROP_X, _CROP_Y, _CROP_W, _CROP_H = 852, 348, 600, 600
 _CLASS_W, _CLASS_H = 224, 224
 
 
@@ -52,7 +52,7 @@ def _make_capture(tmp_path: Path, **kwargs) -> VisionCapture:
         secondary_index=1,
         capture_width=_CAPTURE_W,
         capture_height=_CAPTURE_H,
-        capture_fps=120,
+        capture_fps=30,
         classification_width=_CLASS_W,
         classification_height=_CLASS_H,
         crop_x=_CROP_X,
