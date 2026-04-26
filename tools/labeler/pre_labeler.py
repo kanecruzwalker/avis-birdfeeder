@@ -33,9 +33,8 @@ import os
 import re
 import time
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 
 from pydantic import ValidationError
 
@@ -65,7 +64,7 @@ MIN_AUDIO_HINT_CONFIDENCE = 0.30
 # ── Filename parsing ──────────────────────────────────────────────────────────
 
 
-def parse_capture_timestamp(filename: str) -> Optional[datetime]:
+def parse_capture_timestamp(filename: str) -> datetime | None:
     """Parse UTC capture timestamp from a Pi capture filename.
 
     Example: "20260424_141605_420369_cam0.png" -> 2026-04-24 14:16:05.420369 UTC
@@ -87,7 +86,7 @@ def parse_capture_timestamp(filename: str) -> Optional[datetime]:
             minute=int(time_str[2:4]),
             second=int(time_str[4:6]),
             microsecond=int(micro_str),
-            tzinfo=timezone.utc,
+            tzinfo=UTC,
         )
     except ValueError:
         logger.warning("Could not parse timestamp from filename: %s", filename)
@@ -116,7 +115,7 @@ class ObservationIndex:
         self._match_count = 0  # records that had a resolvable image_path
 
     @classmethod
-    def from_jsonl(cls, observations_path: Path) -> "ObservationIndex":
+    def from_jsonl(cls, observations_path: Path) -> ObservationIndex:
         """Build an index from a local copy of observations.jsonl."""
         idx = cls()
         if not observations_path.exists():
@@ -157,13 +156,13 @@ class ObservationIndex:
         )
         return idx
 
-    def lookup(self, image_filename: str) -> Optional[dict]:
+    def lookup(self, image_filename: str) -> dict | None:
         """Return the observation record that references this image, or None."""
         return self._by_image_filename.get(image_filename)
 
     def extract_audio_hint(
         self, image_filename: str
-    ) -> tuple[Optional[str], Optional[float]]:
+    ) -> tuple[str | None, float | None]:
         """Pull (species_code, confidence) from the matched observation.
 
         Returns (None, None) if there is no matched observation, no
@@ -235,7 +234,7 @@ class PreLabeler:
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
         model_name: str = DEFAULT_MODEL_NAME,
         temperature: float = DEFAULT_TEMPERATURE,
         max_retries: int = DEFAULT_MAX_RETRIES,
@@ -304,8 +303,8 @@ class PreLabeler:
     def label_image(
         self,
         image_path: Path,
-        audio_hint: Optional[str] = None,
-        audio_confidence: Optional[float] = None,
+        audio_hint: str | None = None,
+        audio_confidence: float | None = None,
     ) -> PreLabel:
         """Pre-label a single image. Raises on hard failures.
 
@@ -335,7 +334,7 @@ class PreLabeler:
             ),
         ]
 
-        last_exc: Optional[Exception] = None
+        last_exc: Exception | None = None
         started = time.monotonic()
 
         for attempt in range(self.max_retries + 1):
@@ -387,11 +386,11 @@ class PreLabeler:
     def run(
         self,
         image_dir: Path,
-        observations_path: Optional[Path],
+        observations_path: Path | None,
         output_path: Path,
-        limit: Optional[int] = None,
-        min_capture_time: Optional[datetime] = None,
-        camera_filter: Optional[str] = None,  # "cam0", "cam1", or None for both
+        limit: int | None = None,
+        min_capture_time: datetime | None = None,
+        camera_filter: str | None = None,  # "cam0", "cam1", or None for both
     ) -> dict:
         """Pre-label a batch of images, appending results to output_path.
 
@@ -530,7 +529,7 @@ class PreLabeler:
 
     @staticmethod
     def _iter_images(
-        image_dir: Path, camera_filter: Optional[str]
+        image_dir: Path, camera_filter: str | None
     ) -> Iterator[Path]:
         """Yield image paths in newest-first order, optionally filtered by camera.
 

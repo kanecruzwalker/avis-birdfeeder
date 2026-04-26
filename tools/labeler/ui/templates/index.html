@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#f7f1e6">
+  <title>Avis · review</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body data-theme="warm-light" data-view="{{ view }}" data-species-filter="{{ species_filter or '' }}">
+
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="/?token={{ token }}" class="brand" data-nav="summary">Avis · review</a>
+      <nav class="topbar-nav">
+        <a href="/?token={{ token }}" data-nav="summary" class="nav-link">Queue</a>
+        <a href="/verified?token={{ token }}" data-nav="verified" class="nav-link">Verified</a>
+      </nav>
+      <div class="topbar-spacer"></div>
+      <div class="topbar-coverage" id="topbar-coverage" aria-label="Verification coverage">—</div>
+
+      <div class="theme-switcher" role="radiogroup" aria-label="Theme palette">
+        <button type="button" data-theme-palette="warm" aria-pressed="true" aria-label="Warm theme — terracotta and sage">
+          <span class="theme-dot theme-dot-warm"></span>
+        </button>
+        <button type="button" data-theme-palette="pollen" aria-pressed="false" aria-label="Pollen theme — gold and green">
+          <span class="theme-dot theme-dot-pollen"></span>
+        </button>
+        <button type="button" data-theme-palette="mono" aria-pressed="false" aria-label="Mono pop theme — neutral with iris accent">
+          <span class="theme-dot theme-dot-mono"></span>
+        </button>
+        <button type="button" data-theme-mode-toggle aria-label="Toggle light or dark mode">
+          <svg id="theme-mode-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="4"/>
+            <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="content">
+
+    <!-- ── Summary view: group-by-species buckets ───────────────────────── -->
+    <section class="view view-summary" data-view="summary">
+      <div class="view-header">
+        <h1>Review queue</h1>
+        <p class="muted" id="summary-overall">Loading…</p>
+      </div>
+
+      <div class="bucket-list" id="bucket-list">
+        <div class="empty-state" id="bucket-empty" style="grid-column: 1 / -1;">No pre-labels found.</div>
+      </div>
+
+      <div class="view-actions">
+        <button class="btn btn-primary" id="btn-review-all">Review all unverified</button>
+      </div>
+    </section>
+
+    <!-- ── Review view: one image at a time ────────────────────────────── -->
+    <section class="view view-review" data-view="review">
+      <div class="review-toolbar">
+        <button class="btn-link" id="review-back" aria-label="Back to queue">← Back</button>
+        <div class="review-progress" id="review-progress">—</div>
+        <button class="btn-link" id="review-skip" aria-label="Skip this image">Skip →</button>
+      </div>
+
+      <div class="review-image-wrap" id="review-image-wrap">
+        <img id="review-image" alt="" />
+        <div class="review-image-loading" id="review-image-loading">Loading…</div>
+      </div>
+
+      <div class="review-meta">
+        <div class="prelabel-row">
+          <span class="muted">Pre-label</span>
+          <strong id="prelabel-species">—</strong>
+          <span class="prelabel-confidence-pill" id="prelabel-confidence">—</span>
+        </div>
+        <div class="prelabel-reasoning" id="prelabel-reasoning"></div>
+        <div class="audio-hint" id="audio-hint" hidden></div>
+        <div class="already-verified" id="already-verified" hidden></div>
+      </div>
+
+      <div class="review-actions">
+        <button class="btn btn-confirm" id="btn-confirm">
+          Confirm <span id="btn-confirm-species">—</span>
+          <kbd>↵</kbd>
+        </button>
+        <button class="btn btn-skip" id="btn-skip">Skip <kbd>S</kbd></button>
+      </div>
+
+      <div class="quick-correct">
+        <div class="quick-correct-label">Correct to</div>
+        <div class="quick-correct-grid" id="quick-correct-grid">
+          <!-- buttons injected by JS -->
+        </div>
+      </div>
+
+      <div class="other-input" id="other-input" hidden>
+        <label for="other-code-input">Out-of-vocab species — 4-letter code</label>
+        <input id="other-code-input" type="text" maxlength="4" autocapitalize="characters" autocomplete="off" spellcheck="false" placeholder="CALT" />
+        <input id="other-notes-input" type="text" autocomplete="off" placeholder="Notes (optional)" />
+        <div class="other-input-actions">
+          <button class="btn btn-confirm" id="btn-confirm-other">Save OTHER</button>
+          <button class="btn-link" id="btn-cancel-other">Cancel</button>
+        </div>
+      </div>
+
+      <div class="empty-state" id="review-empty" hidden>
+        <svg width="80" height="80" viewBox="0 0 80 80" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="40" cy="40" r="32"/>
+          <path d="M28 36c2 0 3 1 3 3M52 36c-2 0-3 1-3 3M28 50c4 4 20 4 24 0"/>
+        </svg>
+        <p>Nothing left to review here.</p>
+        <button class="btn" data-nav="summary" style="margin-top: 12px;">Back to queue</button>
+      </div>
+    </section>
+
+    <!-- ── Verified view: audit your work ──────────────────────────────── -->
+    <section class="view view-verified" data-view="verified">
+      <div class="view-header">
+        <h1>Verified labels</h1>
+        <div class="filter-row">
+          <label class="muted" for="verified-filter">Filter</label>
+          <select id="verified-filter">
+            <option value="">All species</option>
+          </select>
+          <span class="muted" id="verified-count" style="margin-left: auto;"></span>
+        </div>
+      </div>
+      <table class="verified-table" id="verified-table">
+        <thead>
+          <tr>
+            <th class="col-thumb"></th>
+            <th class="col-filename">Filename</th>
+            <th class="col-species">Species</th>
+            <th class="col-agreed">Agreed</th>
+            <th class="col-when">When</th>
+          </tr>
+        </thead>
+        <tbody id="verified-tbody"></tbody>
+      </table>
+      <div class="empty-state" id="verified-empty" hidden>
+        <svg width="64" height="64" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="12" y="12" width="40" height="40" rx="6"/>
+          <path d="M22 32h20M22 24h20M22 40h12"/>
+        </svg>
+        No verified labels yet.
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ── Conflict modal ─────────────────────────────────────────────────── -->
+  <div class="modal-backdrop" id="conflict-modal" hidden>
+    <div class="modal">
+      <h2>Already verified</h2>
+      <p>This image was verified as <strong id="conflict-existing-species">—</strong>
+        <span id="conflict-existing-when" class="muted"></span> by another session.</p>
+      <p>Overwrite with your choice (<strong id="conflict-new-species">—</strong>)?</p>
+      <div class="modal-actions">
+        <button class="btn" id="conflict-cancel">Cancel</button>
+        <button class="btn btn-warning" id="conflict-overwrite">Overwrite</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Toast notifications ───────────────────────────────────────────── -->
+  <div class="toast" id="toast"></div>
+
+  <script>
+    window.AVIS = {
+      token: {{ token | tojson }},
+      initialView: {{ view | tojson }},
+      speciesFilter: {{ (species_filter or '') | tojson }},
+    };
+  </script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
