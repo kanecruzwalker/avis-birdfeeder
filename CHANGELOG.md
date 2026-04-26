@@ -10,6 +10,131 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+Phase 8 — Track 3 visual classifier retraining (PR #N feature/track-3-retraining)
+Added
+
+docs/investigations/track-3-retraining-2026-04-25.md — full
+investigation document covering hypothesis, methodology, split
+strategy, ablation plan (V0/V1/V2/V3), success criteria, risks, and
+rollback plan.
+notebooks/phase8_track3_training.py — feature extraction (cached to
+track3_features_cache.npz, gitignored at 34MB) plus training of four
+LogReg head variants. Each variant tunes C ∈ {0.01, 0.1, 1.0, 10.0, 100.0} on the deployment val set with class_weight="balanced". All
+four bundles saved to models/visual/sklearn_pipeline_track3_v{0,1,2,3}.pkl.
+notebooks/phase8_track3_evaluation.py — evaluates each variant on
+both NABirds test (672 records, 19 species) and deployment test
+(642 records, up to 23 classes depending on variant). Produces 8
+confusion matrices, 4 per-class F1 plots, 4 classification reports,
+one comparison_table.csv, and winner.txt + winner_rationale.md.
+notebooks/track3_override_winner.py — one-off operational script.
+Backs up the current production model to
+sklearn_pipeline_v0_backup.pkl, deploys V2 to
+sklearn_pipeline.pkl, writes the V2 selection rationale to
+winner_rationale.md documenting the V1-vs-V2 decision.
+tools/labeler/ui/make_deployment_splits.py — chronological 70/15/15
+splits from verified_labels.jsonl by capture_timestamp.
+Stratification check warns if any class has fewer than 3 records in
+val or test. Produces data/splits/deployment_{train,val,test}.csv.
+notebooks/results/phase8/track3_retraining/ — full evaluation
+artifacts (confusion matrices, per-class F1 plots, classification
+reports, comparison table, winner rationale). Tracked in git.
+models/visual/sklearn_pipeline_track3_v{0,1,2,3}.pkl — all four
+variants tracked (~220KB each, 10 .pkl files total at ~2.4MB).
+Permits exact-numbers reproducibility without re-running training.
+models/visual/sklearn_pipeline_v0_backup.pkl — preserved baseline
+for rollback.
+models/baselines/audio_knn_baseline.pkl — Phase 3 audio baseline
+(110KB) now tracked for reproducibility of the phase 7 evaluation.
+notebooks/classifier_retrain_experiment_2026-04-23.py — earlier
+exploratory script preserved as methodology history.
+configs/species.yaml — added CALT (California Towhee, Melozone
+crissalis) entry under year-round residents.
+
+Changed
+
+models/visual/sklearn_pipeline.pkl — production model now serves V2
+(20 classes, NABirds + deployment HOFI/SOSP/AMCR + CALT). Previous
+baseline preserved at sklearn_pipeline_v0_backup.pkl for rollback.
+Pi agent picks up new model on next git pull + systemctl restart.
+.gitignore — added rules to exclude regenerable large files:
+notebooks/results/**/*_features_cache.npz (34MB feature caches
+produced by the training script, recreated in 30-60 minutes by
+re-running) and models/baselines/visual_svm_baseline.pkl (537MB,
+exceeds GitHub's 100MB limit, regenerable from
+notebooks/visual_baseline.ipynb).
+
+Findings (deployment data)
+
+CALT classification fixed. V0 misclassified 100% of CALT records
+as MOCH or MODO because CALT was not in the visual vocabulary. V2
+correctly classifies 67/70 CALT test records (96% recall, per-class
+F1 = 0.77). Confusion matrix off-diagonal CALT-as-MOCH/MODO drops
+from baseline rate to under 2%.
+Deployment macro F1 improvement. V0: 0.131 → V2: 0.736 (Δ +0.605).
+NABirds preservation. V0 macro F1: 0.931 → V2: 0.921 (within the
+0.05 tolerance threshold, no catastrophic forgetting on the 19
+NABirds species).
+V2 vs V1 selection. V1 had higher raw deploy_macro_f1 (0.776 vs
+V2's 0.736) but was evaluated on only 184 of 642 deployment test
+records (29%) — V1 has no class for CALT/NONE/UNKNOWN and excludes
+those records from its evaluation entirely. V2 was evaluated on 254
+records including CALT and is the larger-scope evaluation. V1 cannot
+classify CALT, so deploying V1 would leave the headline problem
+unfixed. Full reasoning in
+notebooks/results/phase8/track3_retraining/winner_rationale.md.
+UNKNOWN class did not learn. V3 attempted explicit NONE and
+UNKNOWN classes for abstention. NONE worked (per-class F1 = 0.77).
+UNKNOWN failed (F1 = 0.14) — only 84 training records and the
+heterogeneous nature of the class (blur + multi-bird + weird angle)
+prevented coherent representation learning. 33 of 58 UNKNOWN test
+records were predicted as CALT. Recommendation for next iteration
+is to drop UNKNOWN as a class and use threshold-based abstention via
+the existing ScoreFuser logic instead. NONE may be retained as a
+class in a future variant since it works.
+
+Limitations
+
+All 4280 verified records are from a single day (2026-04-24, ~21
+hours of captures). Splits test ~2-hour temporal generalization, not
+multi-day. A more robust evaluation will be possible after additional
+days of deployment data accumulate.
+AMCR test set has only 10 records; per-class F1 numbers for AMCR are
+noisy (a single record difference shifts F1 by 0.1).
+Deployment test set cam-skew is 14.5/85.5 (cam0/cam1) versus train
+27.8/72.2. Slight evaluation bias toward cam1 conditions.
+The evaluation script's automatic decision rule (best deploy_macro_f1
+with NABirds tolerance) is flawed when variants evaluate on different
+test set sizes. A revised rule for future Track-N evaluations would
+require evaluation set size parity (e.g., variants must score on at
+least 95% of the largest variant's eval set to qualify).
+
+Verification
+
+Laptop-side: V2 deployed and verified loading — 20 classes, C=0.1,
+track3_variant=v2, val F1=0.842. VisualClassifier.from_config()
+loads cleanly with the new label map.
+Pi-side: Pending first post-merge git pull and systemctl restart avis-agent. Expected log line: "VisualClassifier loaded | classes=20".
+Rollback path: cp models/visual/sklearn_pipeline_v0_backup.pkl models/visual/sklearn_pipeline.pkl then restart agent. < 5 minutes.
+
+Notes
+
+The track3_features_cache.npz (34MB) is intentionally gitignored —
+it's a deterministic function of the input images and can be
+regenerated by running phase8_track3_training.py (~30-60 min on
+CPU). Tracking it would bloat the repo without aiding reproducibility.
+The models/baselines/visual_svm_baseline.pkl (537MB) is also
+gitignored — exceeds GitHub's per-file limit. The Phase 3 baseline
+remains regenerable from notebooks/visual_baseline.ipynb.
+
+Test count
+
+No new tests in this PR (research-mode notebooks/scripts, not src/
+changes). 123 existing tests still passing across the labeler module.
+Future PR: add the bird-agent-side _label_map length test that
+asserts the 20-class shape of the deployed pipeline.
+
+---
+
 
 ### Added
 - **Layer 2 — Labeling assistant review UI** (PR #N)

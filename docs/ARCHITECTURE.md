@@ -23,11 +23,16 @@ The orchestration layer. `bird_agent.py` owns the main loop. It calls into the a
 
 ### `src/audio/`
 Three-stage pipeline:
-1. `capture.py` — Records audio from the USB mic in configurable window sizes
-2. `preprocess.py` — Converts raw WAV to mel spectrograms (the input format for BirdNET and our fine-tuned model)
-3. `classify.py` — Wraps BirdNET inference via Python 3.11 subprocess bridge
-   (scripts/audio_inference.py) on Pi. Falls back to direct birdnetlib call
-   on dev machines. Returns a `ClassificationResult`
+1. `capture.py` — Grabs frames from the Pi Camera(s) on motion trigger.
+   Optional bird-presence gate (Hailo YOLO or CPU YOLO) filters empty frames
+   before classification (Phase 8 Branch 2).
+2. `preprocess.py` — Resizes, normalizes, and optionally augments images.
+   Output is HWC float32 (224, 224, 3), ImageNet-normalized.
+3. `classify.py` — Wraps frozen EfficientNet-B0 + sklearn LogReg inference,
+   returns a `ClassificationResult`. Currently 20 classes (Track 3 V2 model:
+   19 NABirds species + CALT). Either the CPU PyTorch path or the Hailo
+   NPU path is selected at runtime based on `hardware.yaml`. Both paths
+   produce identical 1280-dim feature vectors for the LogReg head.
 
 ### `src/vision/`
 Three-stage pipeline:
@@ -48,12 +53,23 @@ Three-stage pipeline:
 ## Data Flow
 
 ```
-Raw audio (WAV)     →  [preprocess] → Spectrogram → [classify] → ClassificationResult
-Raw image (frame)   →  [preprocess] → Tensor      → [classify] → ClassificationResult
-                                                                          ↓
-                                                               [fusion] → BirdObservation
-                                                                          ↓
-                                                              [notify] → User + Log
+Raw audio (WAV)     →  [preprocess]  →  Mel spectrogram  →  [BirdNET]   →  ClassificationResult
+(subprocess)
+Raw image (frame)   →  [motion gate] →  [bird gate*]      →  [classify] →  ClassificationResult
+(frozen EN+LR)
+↓
+[ScoreFuser] → BirdObservation
+↓
+[Notifier] → Push + Log
+(observations.jsonl)
+
+bird-presence gate optional, configurable via hardware.yaml detection_mode
+
+The visual classifier produces predictions over 20 species (Track 3 V2):
+the original 19 NABirds-trained species (AMCR, AMRO, ANHU, BLPH, DOWO,
+EUST, HOFI, HOORI, HOSP, LEGO, MOCH, MODO, OCWA, SOSP, SPTO, WBNU,
+WCSP, WREN, YRUM) plus CALT (California Towhee) added from verified
+deployment data.
 ```
 
 ## Configuration Philosophy
@@ -62,7 +78,8 @@ Raw image (frame)   →  [preprocess] → Tensor      → [classify] → Classif
 
 | File | Contents |
 |------|----------|
-| `configs/species.yaml` | List of San Diego region species (drives all dataset filtering) |
+| `configs/species.yaml` | List of San Diego region species. Drives dataset filtering, model output labels, and UI display names. Currently 20 species after Track 3 added CALT. |
+
 | `configs/thresholds.yaml` | Detection confidence cutoffs, audio window duration |
 | `configs/paths.yaml` | Dataset paths, model weight paths, log output path |
 | `configs/notify.yaml` | Notification channel config (which channels are active) |
@@ -74,6 +91,43 @@ Raw image (frame)   →  [preprocess] → Tensor      → [classify] → Classif
 - The Fifine USB mic appears as a standard ALSA audio device. `sounddevice` handles capture.
 - All heavy training happens on laptop/Colab — the Pi is **inference-only**.
 
+
+## Visual Classifier Retraining Workflow (Track 3)
+
+The frozen EfficientNet-B0 backbone and the LogReg head are decoupled.
+The backbone weights never change — only the head is retrained when new
+labeled deployment data is available.
+
+┌────────────────────────────────────┐
+                       │  models/visual/frozen_extractor.pt │  ← never retrained
+                       │  (timm EfficientNet-B0 ImageNet)   │
+                       └─────────────┬──────────────────────┘
+                                     │ 1280-dim features
+                                     ▼
+                       ┌────────────────────────────────────┐
+                       │  models/visual/sklearn_pipeline.pkl│  ← retrained per Track-N
+                       │  (StandardScaler + LogReg head)    │
+                       └────────────────────────────────────┘
+
+      A new retraining iteration follows this pattern:
+
+1. **Layer 1** (`tools/labeler/`) generates pre-labels via Gemini vision
+   over recent captures.
+2. **Layer 2** (`tools/labeler/ui/`) presents the pre-labels for human
+   verification, producing `data/labels/verified_labels.jsonl`.
+3. **Track-N** (`notebooks/phase8_track{N}_*.py`) creates chronological
+   splits, trains LogReg variants on cached frozen features, evaluates
+   on both NABirds test (preserved benchmark) and deployment test
+   (real-world performance), and selects a winner.
+4. The winner's `.pkl` is copied to `models/visual/sklearn_pipeline.pkl`
+   for production. The previous baseline is preserved at
+   `sklearn_pipeline_v0_backup.pkl` for rollback.
+
+This decoupling is a deliberate architectural choice: it keeps the
+expensive feature extractor stable (no risk of catastrophic forgetting,
+no Hailo recompilation needed when the head changes) while making
+vocabulary expansion and class adjustments cheap (LogReg head trains in
+seconds on cached features).                 
 ## Dependency Boundaries
 
 ```
