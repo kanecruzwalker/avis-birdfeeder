@@ -1,0 +1,9 @@
+              precision    recall  f1-score   support
+
+        AMCR       1.00      0.70      0.82        10
+        HOFI       0.80      0.05      0.09        81
+        SOSP       0.00      0.00      0.00        93
+
+   micro avg       0.92      0.06      0.11       184
+   macro avg       0.60      0.25      0.31       184
+weighted avg       0.41      0.06      0.09       184

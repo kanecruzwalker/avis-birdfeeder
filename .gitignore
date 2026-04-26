@@ -34,7 +34,13 @@ data/captures/
 # ── Model weights (large — tracked separately or downloaded) ──────────────────
 models/**/*.pt
 models/**/*.pth
-models/**/*.pkl
+
+
+# .pkl files are sklearn pipelines — small (~220KB each) and version-tracked
+# for reproducibility. .pt/.pth (PyTorch checkpoints) and .hef (Hailo) stay
+# ignored because those are large binaries regenerable from training scripts.
+
+
 models/*.tflite
 models/*.hef
 *.onnx
@@ -88,3 +94,11 @@ inspect_smoke_test.py
 smoke_test_ground_truth.json
 test_frame.png
 test_gemini_vision.py
+
+# Frozen-extractor feature caches (large, regenerable from training scripts)
+notebooks/results/**/track3_features_cache.npz
+notebooks/results/**/*_features_cache.npz
+
+# Phase 3 visual SVM baseline — 537MB, exceeds GitHub's 100MB limit.
+# Regenerable from notebooks/visual_baseline.ipynb if needed for evaluation.
+models/baselines/visual_svm_baseline.pkl
