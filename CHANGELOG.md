@@ -10,7 +10,72 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+
+### Added
+- **Layer 2 — Labeling assistant review UI** (PR #N)
+  - `tools/labeler/ui/` — token-authenticated FastAPI web UI for verifying
+    Layer 1 pre-labels. Three-view SPA (queue, review, verified) with
+    six-theme system (warm/pollen/mono × light/dark), keyboard shortcuts,
+    touch gestures, and mobile-responsive layout.
+  - `tools/labeler/ui/review_store.py` — in-memory store with atomic JSONL
+    persistence (append on first verify, atomic rewrite on correction).
+    Optimistic concurrency via `client_load_time` round-trip prevents
+    silent overwrites when reviewing from multiple devices.
+  - `tools/labeler/ui/auth.py` — `AVIS_WEB_TOKEN` middleware with
+    `hmac.compare_digest` for timing-attack-resistant comparison. Token
+    accepted via `X-Avis-Token` header or `?token=` query parameter.
+  - `tools/labeler/ui/inspect_verified.py` — diagnostic script: schema
+    validation, per-species distribution, OTHER breakdown, agreement-rate
+    analysis, duplicate/orphan detection.
+  - `tools/labeler/ui/inspect_unreviewed.py` — backlog analysis with
+    agreement-rate cross-reference for bulk-action recommendations.
+  - `tools/labeler/ui/README.md` — setup, daily workflow,
+    NONE/UNKNOWN/OTHER distinctions, results-interpretation guide with
+    worked example from the first reviewer session.
+  - `docs/investigations/labeling-assistant-ui-2026-04-25.md` — full
+    design rationale, architecture, success criteria, risks, rollback.
+  - `tests/labeler/ui/` — 76 new tests (30 store, 15 auth, 31 routes).
+  - 116 total Layer 2 tests passing; 123 across the labeler module.
+
+- **Schema additions** (additive, backward-compatible) (PR #N)
+  - `OTHER` sentinel in `tools/labeler/schema.py` — for confidently-
+    identified out-of-vocabulary species.
+  - `other_species_code` field — 4-letter custom code stored when
+    `species_code == "OTHER"`. Pydantic validators enforce the
+    `OTHER ↔ code` invariant and reject collisions with known codes.
+  - 22 new tests in `tests/labeler/test_schema.py` covering validation,
+    format constraints, and known-code collision detection.
+
+- **Configuration**
+  - `AVIS_WEB_TOKEN` documented in `.env.example`. Server refuses to
+    start without a token of at least 16 characters.
+  - `requirements.txt` — added `fastapi==0.118.0`,
+    `uvicorn[standard]==0.32.0`, `python-multipart==0.0.18`,
+    `httpx==0.28.1` (test client).
+
+### Findings (deployment data)
+- First reviewer pass: 4280 of 8276 captures verified (52% coverage).
+- Visual species observed at the feeder during this period: AMCR
+  (American Crow, 198 records, 100% pre-labeler agreement), SOSP
+  (Song Sparrow, 1014 records, 96.4%), HOFI (House Finch, 284 records,
+  69.9%), CALT (California Towhee, 521 records via OTHER — out-of-
+  vocabulary, no native pre-labeler support).
+- Nine species the pre-labeler proposed (MODO, MOCH, WREN, HOSP, OCWA,
+  AMRO, HOORI, SPTO, EUST) had zero agreement across 535 records;
+  appear to be visual hallucinations on out-of-distribution captures.
+- Implication for Track 3 retraining: target intervention is adding
+  CALT to the visual classifier vocabulary using the 521 reviewer-
+  confirmed examples. Other vocabulary additions are not supported by
+  this deployment data.
+
+### Notes
+- Zero changes to `src/` runtime code — production agent on the Pi is
+  untouched.
+- Bulk-confirm script (`tools/labeler/ui/bulk_confirm.py`) is included
+  but was not run for this dataset; current 4280 records reflect
+  manual review only.
+
+---
 
 ### Added
 - Upgraded camera capture from 1536×864 @ 120fps to 2304×1296 @ 30fps
