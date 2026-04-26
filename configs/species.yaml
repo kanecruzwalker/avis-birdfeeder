@@ -97,3 +97,7 @@ species:
   - code: YRUM
     common_name: "Yellow-rumped Warbler"
     scientific_name: "Setophaga coronata"
+
+  - code: CALT
+    common_name: "California Towhee"
+    scientific_name: "Melozone crissalis"

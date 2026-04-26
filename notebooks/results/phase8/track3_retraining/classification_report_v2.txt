@@ -1,0 +1,10 @@
+              precision    recall  f1-score   support
+
+        AMCR       0.89      0.80      0.84        10
+        CALT       0.64      0.96      0.77        70
+        HOFI       0.67      0.67      0.67        81
+        SOSP       0.85      0.55      0.67        93
+
+    accuracy                           0.71       254
+   macro avg       0.76      0.74      0.74       254
+weighted avg       0.74      0.71      0.70       254
