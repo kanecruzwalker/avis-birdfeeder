@@ -18,13 +18,12 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 from .pre_labeler import DEFAULT_MODEL_NAME, PreLabeler
-
 
 # ── Defaults for Avis repo layout ─────────────────────────────────────────────
 
@@ -35,7 +34,7 @@ DEFAULT_OUTPUT_PATH = Path("data/labels/pre_labels.jsonl")
 # Anchor for "post-PR #51 color fix" — BGR/RGB swap was fixed here, so earlier
 # images have inverted colors and should NOT be used as training data.
 # UTC equivalent of April 21 2026 03:17 PDT.
-PR51_MERGE_TIME_UTC = datetime(2026, 4, 21, 10, 17, 0, tzinfo=timezone.utc)
+PR51_MERGE_TIME_UTC = datetime(2026, 4, 21, 10, 17, 0, tzinfo=UTC)
 
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
