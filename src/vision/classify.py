@@ -159,7 +159,7 @@ class VisualClassifier:
         species_list_path = config_path.parent / "species.yaml"
 
         # Read Hailo config from hardware.yaml if available
-        hailo_enabled = (False,)
+        hailo_enabled = False
         hailo_hef_path = None
         hw_path = config_path.parent / "hardware.yaml"
         if hw_path.exists():

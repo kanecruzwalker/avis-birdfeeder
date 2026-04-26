@@ -378,11 +378,22 @@ class BirdAgent:
         # ── Step 8: Confidence threshold gate ─────────────────────────────────
         # Populate media paths BEFORE gate checks so suppressed observations
         # retain image/audio references for analysis.
+        # Propagate detection_mode from whichever camera capture produced the result.
+        # CaptureResult.detection_mode reflects the actual crop strategy used
+        # (fixed_crop or yolo). Without this propagation, BirdObservation always
+        # records "fixed_crop" regardless of which mode ran — blocks A/B analysis.
+        detection_mode = "fixed_crop"  # safe default
+        if capture_primary is not None and getattr(capture_primary, "detection_mode", None):
+            detection_mode = capture_primary.detection_mode
+        elif capture_secondary is not None and getattr(capture_secondary, "detection_mode", None):
+            detection_mode = capture_secondary.detection_mode
+
         observation = observation.model_copy(
             update={
                 "audio_path": str(audio_path) if audio_path else None,
                 "image_path": str(image_path) if image_path else None,
                 "image_path_2": str(image_path_2) if image_path_2 else None,
+                "detection_mode": detection_mode,
             }
         )
 
