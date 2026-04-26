@@ -10,6 +10,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+### Fixed
+- `VisualClassifier.from_config` no longer assigns `hailo_enabled` as a one-tuple — boolean checks against `hardware.yaml hailo.enabled` now work correctly.
+- `BirdAgent._cycle` now propagates `detection_mode` from `CaptureResult` to `BirdObservation`, fixing field-tag tracking that always reported `fixed_crop`.
+
+---
+
 Phase 8 — Track 3 visual classifier retraining (PR #N feature/track-3-retraining)
 Added
 
