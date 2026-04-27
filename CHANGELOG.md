@@ -11,6 +11,17 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ---
 
 ### Fixed
+- Orchestrator A/B rotation timer now fires unconditionally on schedule.
+  Previously, when the LLM analyst path was active and the LLM never
+  returned `switch_mode`, the timer-based rotation never fired —
+  resulting in deployment sessions stuck in a single mode for hours.
+  Observed 311-minute single-mode window in 2026-04-26 deployment.
+  Rotation timer now runs at the top of every cycle regardless of LLM
+  availability, restoring expected A/B data collection behavior.
+
+---
+
+### Fixed
 - `VisualClassifier.from_config` no longer assigns `hailo_enabled` as a one-tuple — boolean checks against `hardware.yaml hailo.enabled` now work correctly.
 - `BirdAgent._cycle` now propagates `detection_mode` from `CaptureResult` to `BirdObservation`, fixing field-tag tracking that always reported `fixed_crop`.
 
