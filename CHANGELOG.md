@@ -10,14 +10,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-### Fixed
+  ### Fixed
 - Orchestrator A/B rotation timer now fires unconditionally on schedule.
-  Previously, when the LLM analyst path was active and the LLM never
-  returned `switch_mode`, the timer-based rotation never fired —
-  resulting in deployment sessions stuck in a single mode for hours.
-  Observed 311-minute single-mode window in 2026-04-26 deployment.
-  Rotation timer now runs at the top of every cycle regardless of LLM
-  availability, restoring expected A/B data collection behavior.
+  Previously, when the LLM analyst path was active and the LLM consistently
+  returned `switch_mode=None`, the timer-based rotation never fired, leaving
+  the system stuck in a single mode. Observed 311-minute single-mode window
+  in 2026-04-26 deployment versus the configured 30-minute rotation. Fix
+  moves rotation to the top of `_run_cycle()` where it runs every cycle
+  regardless of LLM availability.
+- Removed duplicate `run()` method body in `ExperimentOrchestrator` left
+  over from a prior merge.
 
 ---
 
