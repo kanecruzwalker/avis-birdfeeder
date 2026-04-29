@@ -100,6 +100,29 @@ Versioning follows [Semantic Versioning](https://semver.org/).
     {variant}` and falls back to a "not available" message on 404.
     Router upgraded to parse `#/<view>/<id>` so detail can be
     deep-linked. Topbar nav extended with Timeline + Gallery links.
+  - PR 8: chat endpoint + UI. New `src/web/routes/chat.py` exposes
+    `POST /api/ask`, which proxies the user's question to
+    `BirdAnalystAgent.answer()` and returns its full structured
+    response (`answer`, `tools_called`, `confidence`, `llm_available`,
+    `error`, `generated_at`). The analyst is wired in via
+    `create_app(analyst=...)` and stashed on `app.state.analyst`; when
+    no analyst is configured (the default in tests, and any deploy
+    without `GEMINI_API_KEY`), the route returns 503 with an operator
+    hint. The (synchronous) `answer()` call is offloaded to a
+    threadpool so the LangChain blocking call doesn't pin the
+    uvicorn event loop. `python -m src.web` now opportunistically
+    constructs the analyst from `configs/` when `GEMINI_API_KEY` is
+    set, with all import + init failures degrading silently to "chat
+    disabled" — `BirdAnalystAgent` is imported lazily inside that
+    helper so missing langchain / google-genai installs don't block
+    `--help`. New `src/web/static/views/chat.js` renders a bubble
+    thread (user / assistant) with a collapsed "tools used" summary
+    under each assistant turn and a 2000-char-capped composer; Enter
+    sends, Shift+Enter inserts a newline. New `view-chat` section in
+    `index.html`, topbar nav link, and theme-aware bubble styles in
+    `styles.css`. No SSE / streaming — wait-for-full response keeps
+    the wire shape and frontend simple, and matches the investigation
+    doc's success criterion (under 30 seconds round-trip).
 - New tests: 16 in `tests/web/test_box_cache.py` (TTL, fade,
   thread-safety), 10 in `tests/util/test_frame_annotator.py`
   (round-trip, alpha fast-path, pixel sanity, robustness), 6 in
@@ -108,11 +131,15 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   `tests/web/test_routes_pages.py` (HTML shell incl. all view
   sections + nav links, static bundle, auth boundary), 2 added to
   `tests/web/test_routes_observations.py` (`dispatched=all`
-  tri-state, 422 on garbage). 290 total tests
-  passing across web, util, vision (excluding torch-heavy modules),
-  data, and labeler-auth suites. Pure additive change to
-  `src/vision/capture.py` (+94 lines, 0 deletions); 59 existing
-  `tests/vision/test_capture.py` cases still pass.
+  tri-state, 422 on garbage), 13 in
+  `tests/web/test_routes_chat.py` (503 when unconfigured, auth
+  wall, Pydantic validation, response shape, `tools_called` and
+  `llm_available` passthrough, threadpool offload smoke check).
+  303 total tests passing across web, util, vision (excluding
+  torch-heavy modules), data, and labeler-auth suites. Pure
+  additive change to `src/vision/capture.py` (+94 lines, 0
+  deletions); 59 existing `tests/vision/test_capture.py` cases
+  still pass.
 
 ---
 

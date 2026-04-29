@@ -14,18 +14,26 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from .box_cache import BoxCache
 from .observation_store import ObservationStore
+from .routes import chat as chat_routes
 from .routes import images as images_routes
 from .routes import observations as observations_routes
 from .routes import pages as pages_routes
 from .routes import status as status_routes
 from .routes import stream as stream_routes
 from .stream_buffer import StreamBuffer
+
+if TYPE_CHECKING:
+    # Type-only import; the real class pulls in google-genai + langchain
+    # at module import, which we avoid in this factory so the dashboard
+    # boots without those dependencies installed.
+    from src.agent.bird_analyst_agent import BirdAnalystAgent
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +56,7 @@ def create_app(
     observations_path: Path | None = None,
     stream_buffer: StreamBuffer | None = None,
     box_cache: BoxCache | None = None,
+    analyst: BirdAnalystAgent | Any | None = None,
 ) -> FastAPI:
     """Build and configure a FastAPI app for the web dashboard.
 
@@ -66,6 +75,10 @@ def create_app(
             The dashboard process stashes it on app state for symmetry
             with the stream buffer and for any future per-route
             consumer (e.g. a status chip showing the current detection).
+        analyst: Optional :class:`BirdAnalystAgent`. Drives ``POST
+            /api/ask``; when ``None``, the chat endpoint returns 503.
+            Tests inject a mock with the same ``answer()`` shape so the
+            route can be exercised without the LLM.
     """
     if observations_path is None:
         observations_path = _DEFAULT_OBSERVATIONS_PATH
@@ -89,12 +102,14 @@ def create_app(
     app.state.stream_buffer = stream_buffer
     app.state.stream_wait_timeout = _DEFAULT_STREAM_WAIT_TIMEOUT_SECONDS
     app.state.box_cache = box_cache
+    app.state.analyst = analyst
 
     app.include_router(pages_routes.router)  # GET /
     app.include_router(status_routes.router)  # /health + /api/status
     app.include_router(observations_routes.router)  # /api/observations*
     app.include_router(stream_routes.router)  # /api/stream + /api/frame
     app.include_router(images_routes.router)  # /api/observations/{id}/image/*
+    app.include_router(chat_routes.router)  # /api/ask
 
     # /static/* serves the SPA bundle (CSS, JS, fonts). No auth — the
     # bundle is a generic dashboard shell with no secrets. Mount last

@@ -31,8 +31,10 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import uvicorn
 import yaml
@@ -44,6 +46,35 @@ from .box_cache import BoxCache
 from .stream_buffer import StreamBuffer
 
 logger = logging.getLogger(__name__)
+
+
+_CONFIGS_DIR = Path("configs")
+
+
+def _maybe_build_analyst() -> Any | None:
+    """Instantiate :class:`BirdAnalystAgent` if GEMINI_API_KEY is set.
+
+    Returns ``None`` when no key is configured, when ``configs/`` is
+    absent, or when import / construction raises (the LLM stack is
+    optional — the dashboard must keep booting either way).
+    The import is deferred so missing langchain/google-genai installs
+    don't break ``python -m src.web --help``.
+    """
+    if not os.environ.get("GEMINI_API_KEY"):
+        return None
+    if not _CONFIGS_DIR.exists():
+        logger.warning("GEMINI_API_KEY set but %s missing — chat disabled.", _CONFIGS_DIR)
+        return None
+    try:
+        from src.agent.bird_analyst_agent import BirdAnalystAgent
+    except Exception as exc:  # noqa: BLE001 — any import error means LLM stack missing
+        logger.warning("Could not import BirdAnalystAgent — chat disabled: %s", exc)
+        return None
+    try:
+        return BirdAnalystAgent.from_config(_CONFIGS_DIR)
+    except Exception as exc:  # noqa: BLE001 — config or LLM init failure shouldn't block boot
+        logger.warning("BirdAnalystAgent init failed — chat disabled: %s", exc)
+        return None
 
 
 # ── observations.jsonl resolution ────────────────────────────────────────────
@@ -198,14 +229,22 @@ def main(argv: list[str] | None = None) -> int:
     #    unconditionally so the API contract is stable: routes 503
     #    cleanly when no in-process publisher exists. Production
     #    standalone-dashboard mode stays in that state until the
-    #    cross-process bridge lands.
+    #    cross-process bridge lands. The analyst is opt-in via
+    #    GEMINI_API_KEY — when absent, /api/ask returns 503.
     stream_buffer = StreamBuffer()
     box_cache = BoxCache()
+    analyst = _maybe_build_analyst()
+    if analyst is None:
+        print("  chat:    /api/ask returns 503  (set GEMINI_API_KEY to enable)")
+    else:
+        print("  chat:    /api/ask enabled  (BirdAnalystAgent loaded)")
+    print()
     try:
         app = create_app(
             observations_path=obs_path,
             stream_buffer=stream_buffer,
             box_cache=box_cache,
+            analyst=analyst,
         )
     except Exception as exc:  # noqa: BLE001 — surface any startup error cleanly
         print(f"ERROR: failed to build app: {exc}", file=sys.stderr)

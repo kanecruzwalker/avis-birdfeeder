@@ -14,6 +14,7 @@ import { mountRecent } from "/static/views/recent.js";
 import { mountTimeline, refreshTimeline } from "/static/views/timeline.js";
 import { mountGallery, refreshGallery } from "/static/views/gallery.js";
 import { mountDetail, openDetail } from "/static/views/detail.js";
+import { mountChat } from "/static/views/chat.js";
 
 // ── Token bootstrap ───────────────────────────────────────────────────────────
 
@@ -167,8 +168,9 @@ function showToast(message, { tone = "info", durationMs = 3000 } = {}) {
 //   #/timeline       — horizontal SVG scrub
 //   #/gallery        — grid of cropped thumbnails
 //   #/detail/<id>    — single observation + image tabs
+//   #/chat           — ask the analyst LLM
 
-const VIEWS = ["live", "recent", "timeline", "gallery", "detail"];
+const VIEWS = ["live", "recent", "timeline", "gallery", "detail", "chat"];
 const DEFAULT_VIEW = "live";
 
 function parseHash() {
@@ -250,6 +252,7 @@ function boot() {
   mountTimeline(ctx);
   mountGallery(ctx);
   mountDetail(ctx);
+  mountChat(ctx);
 
   setRoute(parseHash());
 

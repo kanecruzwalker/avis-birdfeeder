@@ -59,14 +59,14 @@ class TestIndex:
         regression where a view module was added but the section
         wasn't (hash route would no-op silently)."""
         body = client.get("/").text
-        for view in ("live", "recent", "timeline", "gallery", "detail"):
+        for view in ("live", "recent", "timeline", "gallery", "detail", "chat"):
             assert f'data-view="{view}"' in body, f"missing section for {view}"
 
     def test_shell_navigation_includes_all_views(self, client):
         """Topbar links must exist for every primary view so users
         can switch between them without typing the hash."""
         body = client.get("/").text
-        for view in ("live", "recent", "timeline", "gallery"):
+        for view in ("live", "recent", "timeline", "gallery", "chat"):
             assert f'data-nav="{view}"' in body, f"missing nav link for {view}"
 
     def test_root_does_not_require_token(self, client):
@@ -114,6 +114,7 @@ class TestStatic:
             "/static/views/timeline.js",
             "/static/views/gallery.js",
             "/static/views/detail.js",
+            "/static/views/chat.js",
         )
         for path in view_paths:
             r = client.get(path)
