@@ -2,8 +2,15 @@
 
 **Date:** 2026-04-28
 **Authors:** Kane Cruz-Walker, Daniel Wen
-**Branch:** `feat/web-dashboard` (to be created)
-**Status:** Planning
+**Branch:** `feat/web-dashboard` → stacked on `claude/hardcore-chaum-b97b2c`
+**Status:** Implemented (PRs 1–10 shipped, PR open at
+[avis-birdfeeder#65](https://github.com/kanecruzwalker/avis-birdfeeder/pull/65)). Last updated 2026-04-29.
+
+> **Note from 2026-04-29.** This document is preserved as the original
+> planning artifact. Inline annotations (`> Status:` blocks, ✅ marks
+> on the build-order checklist) reflect what actually shipped and how
+> it deviated from the plan. The "Deltas from plan" section near the
+> end summarises the meaningful differences for future readers.
 
 ---
 
@@ -317,15 +324,24 @@ agent behavior is unchanged.
 
 ## Open questions for Kane + Dan to decide before coding
 
-- [ ] Do we want the chat endpoint to stream tokens (SSE) or wait for full
-      response? BirdAnalystAgent calls Gemini which can be slow; streaming is
-      a better UX but more code.
-- [ ] Default landing view: live, recent, or timeline?
-- [ ] Theme — reuse labeler UI's six-theme system or pick a single deep-space
-      bioluminescent palette consistent with Drift?
-- [ ] Mobile-first responsive, or desktop-only for MVP?
-- [ ] Show suppressed observations (`dispatched=False`) by default in the
-      timeline, or filter them out unless explicitly requested?
+> **Resolved 2026-04-29.** Decisions taken during implementation:
+
+- [x] **Chat: wait-for-full response** (not SSE). The wire shape stays
+      simple, response times under 30 s in practice, and PR 8 ships
+      sooner. Streaming can be revisited if a user complains.
+- [x] **Default landing view: live.** It's the only view that
+      benefits from being the entry point — the others are
+      explore-on-demand.
+- [x] **Theme: reuse labeler UI's six-theme system** (warm / pollen /
+      mono × light / dark). Visual consistency between dashboard and
+      labeler outweighs aesthetic novelty.
+- [x] **Mobile-first responsive: yes.** Tailscale + phone hotspot is
+      the primary access pattern; the labeler UI already validated
+      touch targets.
+- [x] **Suppressed observations: hidden by default.** A "Show
+      suppressed" toggle in the recent / timeline / gallery filter
+      bars surfaces them when wanted. Friends and demo audiences see
+      a clean dispatched-only stream by default.
 
 ---
 
@@ -362,26 +378,130 @@ Dan's first prompt to his Claude:
 
 Each PR mergeable independently, each adds one capability.
 
-1. **PR 1: scaffold + auth + health** — `src/web/app.py`, `auth.py`, 
-   `/health`, systemd unit. Deployable, does nothing useful, proves the
-   auth wall works.
-2. **PR 2: status + observations read-only** — `/api/status`,
-   `/api/observations`, `/api/observations/{id}`, basic JSON. No frontend yet.
-3. **PR 3: stream buffer + MJPEG** — `VisionCapture.publish()`,
-   `stream_buffer.py`, `/api/stream`, `/api/frame`. Live preview works in
-   browser.
-4. **PR 4: image variants** — schema additions, dispatch path saves all
-   three, three image endpoints.
-5. **PR 5: box cache + annotation** — `box_cache.py`, `frame_annotator.py`,
-   stream now shows boxes.
-6. **PR 6: HTML SPA — live + recent views** — `index.html`, base CSS,
-   live.js, recent.js, view router.
-7. **PR 7: timeline + gallery + detail views** — three more views, filter
-   controls, image tabs in detail view.
-8. **PR 8: chat endpoint + UI** — `/api/ask`, chat.js, bubble thread.
-9. **PR 9: Tailscale docs + ngrok script + README** — deployment finish.
+> **Status 2026-04-29.** PRs 1–9 shipped as planned; PR 10 was added
+> to wire the cross-process MJPEG bridge that the original plan
+> referenced as a deferred concern. Commits live on
+> `claude/hardcore-chaum-b97b2c` stacked on `feat/web-dashboard`;
+> PR open at
+> [avis-birdfeeder#65](https://github.com/kanecruzwalker/avis-birdfeeder/pull/65).
 
-Estimated total: 2–3 weeks of cafe sessions.
+1. ✅ **PR 1: scaffold + auth + health** (`c06d325`) — `src/web/app.py`,
+   `auth.py`, `/health`, systemd unit. Deployable, proves the auth
+   wall works.
+2. ✅ **PR 2: status + observations read-only** (`aad00c4`) —
+   `/api/status`, `/api/observations`, `/api/observations/{id}`.
+3. ✅ **PR 3: stream buffer + MJPEG** (`b283c2b`) —
+   `VisionCapture.publish()`, `stream_buffer.py`, `/api/stream`,
+   `/api/frame`. Live preview works in browser when both processes
+   share an instance.
+4. ✅ **PR 4: image variants** (`74fe8ca`) — schema addition
+   (`image_path_full`), dispatch path saves all three, three image
+   endpoints behind `/api/observations/{id}/image/{variant}`.
+5. ✅ **PR 5: box cache + annotation** (`1102cf9`) — `box_cache.py`,
+   `src/util/frame_annotator.py` (lifted to `src.util` so
+   `src.vision` could import without inverting the dependency
+   arrow), annotation at publish time.
+6. ✅ **PR 6: HTML SPA — live + recent views** (`6940ea3`) —
+   `index.html`, `styles.css` (six-theme system), `app.js`,
+   `views/{live,recent}.js`, hash router, theme switcher, 30 s
+   status poll.
+7. ✅ **PR 7: timeline + gallery + detail views** (`e02c2ff`) — three
+   new view modules + shared filter bar; router upgraded to parse
+   `#/<view>/<id>` so detail can deep-link.
+8. ✅ **PR 8: chat endpoint + UI** (`e44b6eb`) — `POST /api/ask`,
+   `chat.js`, bubble thread. Wait-for-full (no SSE);
+   `BirdAnalystAgent` imported lazily so missing langchain doesn't
+   block dashboard boot.
+9. ✅ **PR 9: Tailscale + ngrok docs + script** (`f7b268d`) —
+   `scripts/avis-web-ngrok.sh`, `docs/WEB_DASHBOARD.md`, README +
+   `PI_DEPLOYMENT.md` updates.
+10. ✅ **PR 10: cross-process MJPEG bridge** (`57b804b`, *added during
+    implementation*) — `src/web/shared_frame_bridge.py` +
+    `VisionCapture.attach_preview_sink()`. Both processes activate
+    via `AVIS_STREAM_SHM=<name>`; `/api/stream` now serves frames
+    across the `avis.service` ↔ `avis-web.service` boundary in
+    production.
+
+Total: 13 commits on top of `origin/feat/web-dashboard` (PRs 4–10
+plus three quality-cleanup commits and the AVIS_WEB_TOKEN-leak fix).
+318 tests passing.
+
+Estimated effort vs actual: original estimate was 2–3 weeks of cafe
+sessions. PRs 4–10 + cleanup landed in ~3 sessions over Apr 28–29
+(prior PRs 1–3 were the bulk of the calendar time).
+
+---
+
+## Deltas from plan
+
+What actually shipped that the original plan didn't anticipate, or
+that diverged once we hit the code:
+
+- **PR 10 added.** The plan acknowledged that `VisionCapture.publish()`
+  is a no-op when `stream_buffer is None` and that the dashboard
+  process needed a way to share the buffer with the agent process.
+  The plan didn't propose how. PR 10 ships single-slot
+  `multiprocessing.shared_memory` with a sequence-number polling
+  subscriber. Activated by setting `AVIS_STREAM_SHM=<name>` on both
+  systemd units; unset = same as the original "no-op" path.
+- **`frame_annotator.py` lives in `src/util/`, not `src/web/`.** The
+  plan put it under `src.web`, but `src.vision` needs to import it
+  for at-publish-time annotation, and `src.web → src.vision` is the
+  established arrow. Moving the module to `src.util` keeps the
+  arrow and lets both sides import freely.
+- **`auth.py` deduplicated into `src/util/web_auth.py`.** The plan
+  said "lift from `tools/labeler/ui/auth.py`". We did, then kept
+  noticing both copies drifting; PR 4 cleanup pulled the shared
+  logic into `src/util/web_auth.py` and made both surfaces 25-line
+  re-exports. The labeler test suite confirms parity.
+- **`/api/observations` `dispatched` is tri-state, not bool.** The
+  plan listed `dispatched (bool, default true)`. The SPA's "Show
+  suppressed" toggle needed a third state ("both"); the route
+  accepts `true` / `false` / `all` (string), default `true`.
+- **Chat response shape is wider than the plan.** Plan said
+  `{ answer, tools_used }`. Actual shape mirrors
+  `AnalystResponse.to_dict()`: `answer`, `tools_called` (not
+  `tools_used`), `confidence`, `llm_available`, `error`,
+  `generated_at`. The wider shape lets the SPA distinguish "LLM
+  unavailable / fallback" from a real answer.
+- **`/api/status` agent-status heuristic is named.** The plan
+  alluded to "agent status"; the implementation pins it to three
+  states (`live` < 60 s, `idle` < 10 min, `stale` otherwise) based
+  on `observations.jsonl` mtime, surfaced in the topbar chip.
+- **AVIS_WEB_TOKEN no longer printed in the startup banner.**
+  Original banner echoed the full token. Caught during PR 4 review;
+  banner now shows a fingerprint only (`xxxx…yyyy`).
+- **`docs/WEB_DASHBOARD.md` is the operator surface.** The plan
+  mentioned README updates and a "Tailscale invite, document in
+  README" item. The doc grew larger than a README section deserves
+  (~290 lines covering install, Tailscale, ngrok, troubleshooting,
+  bridge setup), so it lives as its own file under `docs/` with
+  README + `PI_DEPLOYMENT.md` pointing at it.
+
+What the plan *anticipated* and the implementation honoured:
+
+- ✅ Single-source-of-truth frame publish from `VisionCapture._cycle()`
+  (no second picamera2 consumer, no second NPU caller).
+- ✅ Last-known-box overlay with fade; box updates after fusion
+  regardless of dispatch outcome (so suppressed detections still
+  flash a box in the live view).
+- ✅ Token middleware mirroring labeler/ui exactly
+  (`hmac.compare_digest`, header or query param, `/health` only
+  public route).
+- ✅ Six-theme system lifted from labeler verbatim; component
+  styles dashboard-specific.
+- ✅ Read-only adapter over `observations.jsonl`; the dashboard
+  never writes anything the agent reads.
+
+---
+
+## Followup investigation (TODO)
+
+The original "Final" rollout step called for "investigation followup
+doc with measured numbers (frame rate, bandwidth per viewer, NPU
+contention check, latency)." Not yet done — needs a Pi session with
+the bridge enabled and a couple of test viewers. Track separately
+under Phase 8D demo prep.
 
 ---
 
