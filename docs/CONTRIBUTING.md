@@ -51,7 +51,20 @@ chore(ci): pin ruff version in workflow
 
 Run before every commit:
 ```bash
-ruff format src/ tests/
+bash scripts/lint-local.sh
+```
+
+That wrapper checks your local ruff matches the version pinned in
+`requirements-dev.txt` (CI uses the pin) and runs the same `ruff format
+--check src/ tests/` + `ruff check src/ tests/` commands CI runs. A
+locally-installed newer ruff disagrees with CI on what counts as
+"formatted"; the wrapper fails loud rather than silently lying about lint
+status.
+
+Equivalent raw commands (skip the version-pin check):
+
+```bash
+ruff format --check src/ tests/
 ruff check src/ tests/
 ```
 
