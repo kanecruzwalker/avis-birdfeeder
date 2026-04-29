@@ -1,44 +1,35 @@
 """Thread-safe ring buffer for the live MJPEG preview stream.
 
-The vision capture loop publishes a downsized JPEG every ~200ms via
-:meth:`StreamBuffer.publish`. The web dashboard's ``/api/stream``
-endpoint subscribes to the buffer and forwards each new frame to
-connected viewers as ``multipart/x-mixed-replace``.
+The vision capture loop calls :meth:`StreamBuffer.publish` every
+~200ms with a downsized JPEG; the dashboard's ``/api/stream``
+route subscribes to the buffer and forwards each new frame to
+viewers as ``multipart/x-mixed-replace``.
 
-Design
-------
-- Fixed-size ring (default 30 frames). Old frames are evicted on
-  overflow; the buffer never blocks the publisher.
-- A condition variable wakes subscribers when a new frame lands.
-- Each subscriber tracks its own "last seen" sequence number, so
-  subscribers that join late only get the frames published after
-  they joined (no replay), and slow subscribers don't hold up the
-  publisher (each subscriber jumps to the most-recent frame on its
-  next iteration -- "newest only" semantics, which is exactly what
-  a live preview wants).
-- A configurable subscriber cap (default 5) limits how many
-  concurrent viewers we accept. New connections beyond the cap raise
-  :class:`SubscriberLimitExceeded` and the route turns that into a
-  503 response. The Pi's outbound bandwidth is the practical limit
-  on viewer count; refusing cleanly is preferable to degrading an
-  existing stream.
+Semantics
+---------
+- Fixed-size ring (default 30 frames). Old frames evict on
+  overflow; the publisher never blocks.
+- A condition variable wakes subscribers on each publish.
+- Subscribers always jump to the most-recent frame on their next
+  iteration — no replay, no backlog. Slow consumers don't build
+  latency, they skip frames. This is the right policy for a live
+  preview; queueing would grow latency unboundedly.
+- A configurable subscriber cap (default 5) protects Pi outbound
+  bandwidth. Past the cap, ``subscribe()`` raises
+  :class:`SubscriberLimitExceeded`; the route maps it to 503.
 
-Threading model
----------------
-``publish()`` is called from the capture-loop thread. Subscribers
-iterate from a request-handler thread (FastAPI runs sync generators
-in its threadpool). Both paths take the same ``threading.Condition``
-lock; contention is minimal because the critical sections are tiny
-(append + seq increment + notify on the publisher side; pointer read
-+ optional wait on the subscriber side).
+Threading
+---------
+``publish()`` runs on the capture-loop thread; subscribers iterate
+on a request thread (FastAPI runs sync generators in its
+threadpool). One :class:`threading.Condition` guards everything;
+critical sections are tiny.
 
 Dependency direction
 --------------------
-This module has no FastAPI imports and no agent imports -- it sits
-in ``src.web`` only as a convenient location, but ``src.vision``
-imports nothing from ``src.web``. ``VisionCapture`` accepts a
-duck-typed ``publish(bytes)`` sink, and tests pass a ``StreamBuffer``
-or any other compatible object.
+``src.vision`` imports nothing from ``src.web``. ``VisionCapture``
+takes a duck-typed sink with ``publish(bytes)``; this module is
+that sink in production.
 """
 
 from __future__ import annotations
@@ -56,24 +47,15 @@ _DEFAULT_MAX_SUBSCRIBERS = 5
 
 
 class SubscriberLimitExceeded(RuntimeError):
-    """Raised when ``subscribe()`` is called past the configured cap.
-
-    The route layer maps this to HTTP 503. Pi outbound bandwidth and
-    JPEG encoding CPU both scale with viewer count; refusing cleanly
-    is preferable to degrading an existing viewer's stream.
-    """
+    """Raised when ``subscribe()`` is called past the configured cap."""
 
 
 class StreamBuffer:
     """Thread-safe ring buffer for JPEG preview frames.
 
     Args:
-        capacity: max frames retained in the ring. Older frames are
-            evicted on overflow. Default 30 (~1MB at 30KB/frame, the
-            measured size for 640x360 q=75 JPEGs from the Pi camera).
-        max_subscribers: hard cap on concurrent ``subscribe()``
-            sessions. Past the cap, ``subscribe()`` raises
-            :class:`SubscriberLimitExceeded`. Default 5.
+        capacity: max frames retained. Default 30 (~1MB at 30KB/frame).
+        max_subscribers: cap on concurrent ``subscribe()`` sessions.
     """
 
     def __init__(
@@ -85,24 +67,15 @@ class StreamBuffer:
             raise ValueError("capacity must be at least 1")
         if max_subscribers < 1:
             raise ValueError("max_subscribers must be at least 1")
-
         self._capacity = capacity
         self._max_subscribers = max_subscribers
-
         self._frames: deque[tuple[int, bytes]] = deque(maxlen=capacity)
-        # Monotonic sequence number for the most recent frame. Starts
-        # at 0; the first publish becomes seq=1. Subscribers compare
-        # against this to skip frames they've already seen.
         self._seq = 0
         self._closed = False
-
-        # Single condition variable guards everything: the deque, the
-        # sequence number, the closed flag, and the subscriber count.
-        # Critical sections are tiny so a single lock is fine.
         self._cond = threading.Condition()
         self._subscriber_count = 0
 
-    # ── Properties ────────────────────────────────────────────────────────────
+    # ── Properties (diagnostics) ──────────────────────────────────────────────
 
     @property
     def capacity(self) -> int:
@@ -129,14 +102,10 @@ class StreamBuffer:
     # ── Publisher API ─────────────────────────────────────────────────────────
 
     def publish(self, jpeg_bytes: bytes) -> None:
-        """Push a new JPEG frame onto the ring.
+        """Push a new JPEG. Non-blocking; evicts oldest on overflow.
 
-        Non-blocking: evicts the oldest frame on overflow so the
-        capture loop never stalls. Wakes all current subscribers.
-
-        Closed buffers swallow further publishes silently. The
-        capture thread shouldn't crash on dashboard shutdown, so we
-        return cleanly instead of raising.
+        Closed buffers swallow further publishes silently — the
+        capture thread shouldn't crash on dashboard shutdown.
         """
         if not isinstance(jpeg_bytes, bytes | bytearray | memoryview):
             raise TypeError(f"publish() expects bytes-like, got {type(jpeg_bytes).__name__}")
@@ -149,29 +118,16 @@ class StreamBuffer:
             self._cond.notify_all()
 
     def latest(self) -> bytes | None:
-        """Return the most recent JPEG, or ``None`` when empty."""
         with self._cond:
-            if not self._frames:
-                return None
-            return self._frames[-1][1]
+            return self._frames[-1][1] if self._frames else None
 
     def latest_seq(self) -> int:
-        """Sequence number of the most-recent published frame.
-
-        ``0`` when nothing has been published yet. Useful for
-        diagnostics ("is the publisher alive?") and as the starting
-        seq for a subscriber that wants to skip replay.
-        """
+        """Sequence number of the most-recent frame; 0 if empty."""
         with self._cond:
             return self._seq
 
     def close(self) -> None:
-        """Mark the buffer closed and wake all subscribers.
-
-        Subscribers iterating after ``close()`` see their iterator
-        end (``StopIteration``). Subsequent ``publish()`` calls are
-        no-ops.
-        """
+        """Mark closed and wake all subscribers."""
         with self._cond:
             self._closed = True
             self._cond.notify_all()
@@ -179,20 +135,13 @@ class StreamBuffer:
     # ── Subscriber API ────────────────────────────────────────────────────────
 
     def subscribe(self, *, timeout: float | None = None) -> Subscription:
-        """Start a new subscription.
+        """Start a subscription. Raises ``SubscriberLimitExceeded`` past the cap.
 
         Args:
-            timeout: per-frame wait timeout in seconds. ``None`` waits
-                indefinitely. Routes typically pass a value (e.g. 30s)
-                so an idle stream doesn't hold a worker thread forever
-                if the agent stalls.
-
-        Returns:
-            A :class:`Subscription` -- iterate it for new frames, or
-            use it as a context manager to ensure ``close()`` runs.
-
-        Raises:
-            SubscriberLimitExceeded: when the per-buffer cap is full.
+            timeout: per-frame wait timeout in seconds. ``None``
+                waits indefinitely. Routes typically pass a value
+                so an idle stream doesn't pin a worker thread when
+                the publisher stalls.
         """
         with self._cond:
             if self._subscriber_count >= self._max_subscribers:
@@ -203,13 +152,34 @@ class StreamBuffer:
             initial_seq = self._seq
         return Subscription(self, initial_seq=initial_seq, timeout=timeout)
 
-    def _decrement_subscriber(self) -> None:
+    def _release_subscriber_slot(self) -> None:
         with self._cond:
             self._subscriber_count = max(0, self._subscriber_count - 1)
 
+    def _pop_next_for_subscriber(
+        self,
+        last_seq: int,
+        timeout: float | None,
+    ) -> tuple[int, bytes] | None:
+        """Return the most-recent frame newer than ``last_seq``.
+
+        Blocks on the condition variable until either a new frame
+        is published, the buffer closes, or the timeout elapses.
+        Returns ``None`` to signal end-of-iteration in any of those
+        terminal cases.
+        """
+        with self._cond:
+            while True:
+                if self._closed:
+                    return None
+                if self._seq > last_seq:
+                    return self._frames[-1]
+                if not self._cond.wait(timeout=timeout):
+                    return None  # timeout
+
 
 class Subscription:
-    """Context-managed iterator over new frames.
+    """Iterator over new frames from a :class:`StreamBuffer`.
 
     Use as::
 
@@ -217,11 +187,10 @@ class Subscription:
             for frame in sub:
                 yield mjpeg_chunk(frame)
 
-    The iterator yields each newly-published JPEG. A subscriber that
-    falls behind the publisher only ever sees the most-recent frame
-    on its next ``__next__`` -- intermediate frames are skipped, not
-    queued. For a live preview, "newest only" is the correct
-    semantic; queueing would build latency unboundedly.
+    Late-joining subscribers see only frames published after
+    ``subscribe()`` returned. A subscriber that falls behind the
+    publisher jumps to the newest frame on its next iteration —
+    "newest only" semantics, no queue.
     """
 
     def __init__(
@@ -233,10 +202,6 @@ class Subscription:
     ) -> None:
         self._buffer = buffer
         self._timeout = timeout
-        # Start AT the current seq -- only frames published after
-        # subscribe() returns are yielded. The route layer can also
-        # call buffer.latest() once before iterating to send an
-        # immediate initial frame so the <img> isn't blank.
         self._last_seq = initial_seq
         self._closed = False
 
@@ -249,34 +214,20 @@ class Subscription:
     def close(self) -> None:
         if not self._closed:
             self._closed = True
-            self._buffer._decrement_subscriber()
+            self._buffer._release_subscriber_slot()
 
     def __iter__(self) -> Iterator[bytes]:
         return self
 
     def __next__(self) -> bytes:
-        buf = self._buffer
-        with buf._cond:
-            while True:
-                if self._closed:
-                    raise StopIteration
-                if buf._closed:
-                    raise StopIteration
-                if buf._seq > self._last_seq:
-                    # Always jump to the most-recent frame -- skip
-                    # any backlog. This is the live-preview policy.
-                    seq, payload = buf._frames[-1]
-                    self._last_seq = seq
-                    return payload
-                # Wait for publish or close. wait() returns False on
-                # timeout (Python 3.2+).
-                got = buf._cond.wait(timeout=self._timeout)
-                if not got:
-                    # Idle timeout -- end the iterator cleanly so the
-                    # streaming response can return. The browser will
-                    # typically reconnect when the user refocuses the
-                    # tab (per the design doc's bandwidth mitigation).
-                    raise StopIteration
+        if self._closed:
+            raise StopIteration
+        result = self._buffer._pop_next_for_subscriber(self._last_seq, self._timeout)
+        if result is None:
+            raise StopIteration
+        seq, payload = result
+        self._last_seq = seq
+        return payload
 
 
 __all__ = [
