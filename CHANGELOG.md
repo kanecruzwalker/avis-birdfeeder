@@ -123,6 +123,39 @@ Versioning follows [Semantic Versioning](https://semver.org/).
     `styles.css`. No SSE / streaming — wait-for-full response keeps
     the wire shape and frontend simple, and matches the investigation
     doc's success criterion (under 30 seconds round-trip).
+  - PR 10: cross-process MJPEG bridge via `multiprocessing.shared_memory`.
+    New `src/web/shared_frame_bridge.py` (~150 LOC of bridge code,
+    ~100 LOC of docstring) defines `SharedFramePublisher` (single-
+    writer slot, atomic seq increment after payload write,
+    monotonic u64) and `SharedFrameSubscriber` (polling reader with
+    torn-read retry + a `start_pump(stream_buffer)` helper that
+    forwards new frames into a duck-typed sink in a daemon thread).
+    Single-slot, not a ring — at 5 fps the existing `StreamBuffer`
+    already drops to "newest only" semantics, so a ring would be
+    pure ceremony. Polling at 50 ms (no cross-process condvar);
+    256 KB segment (~8x headroom over a 30 KB JPEG); little-endian
+    layout matches every platform we ship to. Header reset on
+    publisher reattach so a fresh agent doesn't latch subscribers
+    onto a stale frame from a crashed prior run; OS-rounded segment
+    sizes (Windows page-aligns to 4 KB) accepted via `>=` check.
+    New `attach_preview_sink()` method on `VisionCapture` lets the
+    agent's `experiment_orchestrator.main()` wire the publisher
+    after construction without threading a kwarg through three
+    `from_config` chains. Both processes activate the bridge by
+    setting `AVIS_STREAM_SHM=<name>` to the same value (recommend
+    putting it in the shared `.env` so both systemd units see it);
+    unset = today's behaviour. Dashboard's startup banner reports
+    bridge state; agent logs `Cross-process MJPEG bridge enabled` to
+    the journal. 15 new tests in
+    `tests/web/test_shared_frame_bridge.py` (lifecycle, round-trip,
+    monotonic seq, single-slot skip-to-latest, oversized frame
+    rejection, type validation, stale-segment header reset, pump
+    forwarding, pump idempotency + survives sink exceptions). 318
+    total tests passing. `WEB_DASHBOARD.md` gets a "Shared-memory
+    bridge" section with enable steps and troubleshooting; the
+    "/api/stream returns 503" entry updated with the three
+    likeliest causes (bridge not enabled / boot order / agent not
+    publishing).
   - PR 9: deployment finish — Tailscale + ngrok docs and demo script.
     New `scripts/avis-web-ngrok.sh` opens an ngrok HTTP tunnel to
     port 8000 and prints a clipboardable demo URL with `?token=`

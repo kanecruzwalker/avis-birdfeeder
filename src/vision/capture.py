@@ -1203,3 +1203,14 @@ class VisionCapture:
     def get_shared_vdevice(self) -> object | None:
         """Return the shared Hailo VDevice for use by VisualClassifier."""
         return self._shared_vdevice
+
+    def attach_preview_sink(self, sink: _PreviewSink | None) -> None:
+        """Set or clear the live-preview MJPEG sink after construction.
+
+        Lets the agent's entry point wire a cross-process bridge
+        publisher (see ``src/web/shared_frame_bridge.py``) without
+        threading a kwarg through ``BirdAgent.from_config`` and
+        ``ExperimentOrchestrator.from_config``. Pass ``None`` to
+        disable publishing.
+        """
+        self._stream_buffer = sink

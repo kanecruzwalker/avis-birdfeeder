@@ -43,6 +43,7 @@ from dotenv import load_dotenv
 from .app import create_app
 from .auth import AuthConfigError, get_configured_token
 from .box_cache import BoxCache
+from .shared_frame_bridge import SegmentNotFound, SharedFrameSubscriber
 from .stream_buffer import StreamBuffer
 
 logger = logging.getLogger(__name__)
@@ -75,6 +76,30 @@ def _maybe_build_analyst() -> Any | None:
     except Exception as exc:  # noqa: BLE001 — config or LLM init failure shouldn't block boot
         logger.warning("BirdAnalystAgent init failed — chat disabled: %s", exc)
         return None
+
+
+def _maybe_attach_shm_subscriber(
+    shm_name: str,
+    stream_buffer: StreamBuffer,
+) -> SharedFrameSubscriber | None:
+    """Attach the SHM bridge if ``AVIS_STREAM_SHM`` is set and the segment exists.
+
+    Returns ``None`` when the env var is unset (in-process mode) or
+    when the segment doesn't exist yet (agent hasn't started). The
+    dashboard keeps booting either way; ``/api/stream`` returns 503
+    until a publisher comes up.
+    """
+    if not shm_name:
+        return None
+    try:
+        subscriber = SharedFrameSubscriber(shm_name)
+    except SegmentNotFound:
+        return None
+    except Exception as exc:  # noqa: BLE001 — bridge failure shouldn't block boot
+        logger.warning("Could not attach SHM subscriber %r: %s", shm_name, exc)
+        return None
+    subscriber.start_pump(stream_buffer)
+    return subscriber
 
 
 # ── observations.jsonl resolution ────────────────────────────────────────────
@@ -218,8 +243,10 @@ def main(argv: list[str] | None = None) -> int:
             f"           (Tailscale/LAN mode — anyone with the URL "
             f"and token can access)"
         )
+    shm_name = os.environ.get("AVIS_STREAM_SHM", "").strip()
     print(
-        f"  stream:  http://{args.host}:{args.port}/api/stream  (503 until a publisher is wired in)"
+        f"  stream:  http://{args.host}:{args.port}/api/stream  "
+        + (f"(SHM bridge → {shm_name!r})" if shm_name else "(503 until a publisher is wired in)")
     )
     print(f"  health:  http://{args.host}:{args.port}/health  (no token required)")
     print("=" * 64)
@@ -227,10 +254,11 @@ def main(argv: list[str] | None = None) -> int:
 
     # 5. Build the app. Stream buffer + box cache are allocated
     #    unconditionally so the API contract is stable: routes 503
-    #    cleanly when no in-process publisher exists. Production
-    #    standalone-dashboard mode stays in that state until the
-    #    cross-process bridge lands. The analyst is opt-in via
-    #    GEMINI_API_KEY — when absent, /api/ask returns 503.
+    #    cleanly when no in-process publisher exists. The analyst is
+    #    opt-in via GEMINI_API_KEY — when absent, /api/ask returns 503.
+    #    If AVIS_STREAM_SHM is set, attach the cross-process bridge
+    #    and pump frames from the agent's shared-memory segment into
+    #    the local StreamBuffer; the /api/stream route is unchanged.
     stream_buffer = StreamBuffer()
     box_cache = BoxCache()
     analyst = _maybe_build_analyst()
@@ -238,6 +266,14 @@ def main(argv: list[str] | None = None) -> int:
         print("  chat:    /api/ask returns 503  (set GEMINI_API_KEY to enable)")
     else:
         print("  chat:    /api/ask enabled  (BirdAnalystAgent loaded)")
+
+    shm_subscriber = _maybe_attach_shm_subscriber(shm_name, stream_buffer)
+    if shm_name and shm_subscriber is None:
+        print(f"  bridge:  AVIS_STREAM_SHM={shm_name!r} set but segment not found yet —")
+        print("           the dashboard will keep returning 503 on /api/stream.")
+        print("           Start the agent (avis.service) to create the segment.")
+    elif shm_subscriber is not None:
+        print(f"  bridge:  shared-memory pump active (segment {shm_name!r}).")
     print()
     try:
         app = create_app(

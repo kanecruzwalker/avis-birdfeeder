@@ -236,11 +236,70 @@ crashed agent. Use `sudo systemctl status avis` for ground truth.
 
 ### What the live stream falls back to
 
-In production today, the agent and dashboard run as separate systemd
-units with no shared memory, so `/api/stream` returns 503. The
-investigation doc's "cross-process bridge" (TODO, post-PR-9) wires
-this up. Detail / Recent / Timeline / Gallery / Chat all work without
-the bridge.
+In production the agent and dashboard run as separate systemd units
+with no shared memory by default, so `/api/stream` returns 503. The
+**shared-memory bridge** (see below) wires the two processes
+together; until that's enabled, every other view (Recent / Timeline /
+Gallery / Detail / Chat) still works fine.
+
+### Shared-memory bridge for `/api/stream`
+
+The agent process is the only one that has `picamera2` open, so it's
+the only one that can produce JPEG frames. The dashboard process
+needs those frames to serve `/api/stream`. The bridge is a
+single-slot `multiprocessing.shared_memory` segment: the agent
+publishes annotated JPEGs into it; the dashboard polls (~50ms) and
+forwards each new frame into its in-process `StreamBuffer` so the
+existing route serves them unchanged.
+
+Enable it by setting the **same** segment name in both processes:
+
+```
+# /mnt/data/avis-birdfeeder/.env  (read by both services)
+AVIS_STREAM_SHM=avis-stream
+```
+
+Then:
+
+```bash
+sudo systemctl restart avis avis-web
+```
+
+What you should see in the dashboard's startup banner:
+
+```
+stream:  http://0.0.0.0:8000/api/stream  (SHM bridge → 'avis-stream')
+bridge:  shared-memory pump active (segment 'avis-stream').
+```
+
+What you should see in the agent's journal
+(`sudo journalctl -u avis | grep "MJPEG bridge"`):
+
+```
+Cross-process MJPEG bridge enabled (AVIS_STREAM_SHM='avis-stream').
+```
+
+**Boot order doesn't matter.** If the dashboard starts first, the
+segment doesn't exist yet — the dashboard logs a one-line warning
+and `/api/stream` keeps returning 503 until the agent comes up. The
+operator needs to restart the dashboard once after the first time
+the agent runs (so the dashboard re-attaches); systemd's
+`Restart=on-failure` doesn't trigger this since boot didn't fail.
+
+**Cleaning up after a crash.** On Linux the segment persists at
+`/dev/shm/avis-stream` until the OS reboots or somebody unlinks it.
+A fresh agent run reattaches and resets the header — old frames
+don't leak. If you change `MAX_FRAME_BYTES` in
+`src/web/shared_frame_bridge.py` you must unlink manually:
+
+```bash
+rm -f /dev/shm/avis-stream
+sudo systemctl restart avis avis-web
+```
+
+**When to leave the bridge off.** Single-process demo mode (running
+agent and dashboard in one Python process) doesn't need it — pass
+the same `StreamBuffer` instance to both and skip the env var.
 
 ### Chat endpoint
 
@@ -260,10 +319,23 @@ Don't disable this check; the token is the only auth boundary.
 
 ### `/api/stream` returns 503
 
-Expected in the production split-process layout — see the "live
-stream falls back to" section above. Working as intended until the
-bridge ships. To preview locally, run the agent and dashboard in the
-same Python process so they share the `StreamBuffer` instance.
+Three causes, in order of likelihood:
+
+1. **Bridge not enabled.** `AVIS_STREAM_SHM` is unset on either or
+   both services. Set it in `.env` and restart both. See "Shared-
+   memory bridge" above.
+2. **Agent started after the dashboard.** The dashboard couldn't
+   find the segment at boot. Restart the dashboard:
+   `sudo systemctl restart avis-web`.
+3. **Agent isn't publishing.** Check the agent's journal:
+   `sudo journalctl -u avis | grep -E "bridge|preview"`. If the
+   bridge log line is missing, the env var didn't reach the agent
+   (e.g. only set in the dashboard's environment, not in the shared
+   `.env` file).
+
+To preview locally without the bridge, run agent and dashboard in
+the same Python process so they share the `StreamBuffer` instance
+directly.
 
 ### Dashboard reachable from the Pi (`curl localhost:8000`) but not from a laptop
 
