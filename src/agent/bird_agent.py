@@ -54,7 +54,7 @@ from src.data.schema import (
 )
 from src.fusion.combiner import ScoreFuser
 from src.notify.notifier import Notifier
-from src.vision.capture import VisionCapture
+from src.vision.capture import CaptureResult, VisionCapture
 from src.vision.classify import VisualClassifier
 
 logger = logging.getLogger(__name__)
@@ -422,6 +422,15 @@ class BirdAgent:
             self.notifier.log_suppressed(observation)
             return None
 
+        # ── Step 9.5: Save dispatch image variants (PR 4) ─────────────────────
+        # Once both gates have passed, persist the full-frame and (when YOLO
+        # mode produced a box) annotated full-frame variants so the dashboard
+        # detail view has all three. Suppressed observations don't get this —
+        # storage savings, and they're not user-visible anyway.
+        image_path_full = self._save_dispatch_image_variants(capture_primary, observation)
+        if image_path_full is not None:
+            observation = observation.model_copy(update={"image_path_full": image_path_full})
+
         # ── Step 10: Dispatch ────────────────────────────────────────────────
         self.notifier.dispatch(observation)
         self._last_dispatch[observation.species_code] = datetime.now(UTC)
@@ -490,6 +499,71 @@ class BirdAgent:
             image_path,
             audio_path,
         )
+
+    def _save_dispatch_image_variants(
+        self,
+        capture_primary: CaptureResult | None,
+        observation: BirdObservation,
+    ) -> str | None:
+        """Persist full-frame and (when applicable) annotated full-frame
+        variants of the dispatched observation's primary capture.
+
+        Filenames are derived from the existing cropped ``image_path``
+        produced by :class:`VisionCapture`:
+
+            cropped:    ``<ts>_cam<N>.png``      (already on disk)
+            full:       ``<ts>_cam<N>_full.png``       (new — this method)
+            annotated:  ``<ts>_cam<N>_annotated.png``  (new — only when
+                        ``detection_mode == 'yolo'`` and a box exists)
+
+        The dashboard's image route derives the annotated path from
+        ``image_path_full`` by swapping the ``_full`` stem suffix for
+        ``_annotated``, so this method writes to that derived name
+        rather than threading a separate path through the schema.
+
+        Returns:
+            The path of the saved full-frame variant (string), or
+            ``None`` if nothing was saved (no capture, no cropped path,
+            PIL unavailable, or the save itself failed). Annotated
+            failures are logged but don't block returning the full path.
+        """
+        if capture_primary is None or capture_primary.image_path is None:
+            return None
+        try:
+            from PIL import Image, ImageDraw  # type: ignore[import]
+        except ImportError:
+            logger.warning("PIL not available — skipping dispatch image variants.")
+            return None
+
+        cropped_path = Path(capture_primary.image_path)
+        full_path = cropped_path.with_name(cropped_path.stem + "_full" + cropped_path.suffix)
+
+        try:
+            Image.fromarray(capture_primary.raw_frame).save(full_path)
+            logger.debug("Saved dispatch full frame → %s", full_path.name)
+        except Exception as exc:
+            logger.warning("Failed to save full frame for dispatch: %s", exc)
+            return None
+
+        if capture_primary.detection_mode == "yolo" and capture_primary.detection_box is not None:
+            annotated_path = cropped_path.with_name(
+                cropped_path.stem + "_annotated" + cropped_path.suffix
+            )
+            try:
+                img = Image.fromarray(capture_primary.raw_frame).copy()
+                draw = ImageDraw.Draw(img)
+                x1, y1, x2, y2 = capture_primary.detection_box
+                draw.rectangle([x1, y1, x2, y2], outline=(0, 255, 0), width=4)
+                label = f"{observation.species_code} {observation.fused_confidence:.2f}"
+                draw.text((x1, max(y1 - 14, 0)), label, fill=(0, 255, 0))
+                img.save(annotated_path)
+                logger.debug("Saved dispatch annotated frame → %s", annotated_path.name)
+            except Exception as exc:
+                # Annotated is best-effort — full is already saved, so the
+                # observation is still useful even if box-drawing fails.
+                logger.warning("Failed to save annotated frame: %s", exc)
+
+        return str(full_path)
 
     def _is_on_cooldown(self, species_code: str) -> bool:
         """

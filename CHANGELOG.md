@@ -36,11 +36,24 @@ Versioning follows [Semantic Versioning](https://semver.org/).
     `GET /api/frame` (single most-recent JPEG). Per-frame wait timeout
     configurable via `app.state.stream_wait_timeout` (5 s prod, 0.3 s in
     tests).
-- 139 new tests in `tests/web/`, covering token middleware, observation
-  store + filters + pagination, status/observations/stream routes, and
-  ring-buffer concurrency. Pure additive change to `src/vision/capture.py`
-  (+94 lines, 0 deletions); 59 existing `tests/vision/test_capture.py`
-  cases still pass.
+  - PR 4: image variants. New schema field
+    `BirdObservation.image_path_full` (optional, default `None` —
+    backward compatible with all existing `observations.jsonl` records).
+    `BirdAgent` now saves the full uncropped frame and, when YOLO mode
+    produced a box, an annotated full frame, right after the cooldown
+    gate passes. Filenames derive from the existing cropped path:
+    `<stem>_full.png` and `<stem>_annotated.png`. New endpoint
+    `GET /api/observations/{id}/image/{cropped|full|annotated}` serves
+    each variant as `image/png`; the annotated path is derived from
+    `image_path_full` by suffix swap, so the schema stays minimal. 404
+    when the variant's path field is `None` or the file is missing on
+    disk.
+- 153 new tests in `tests/web/` total (139 from PRs 1–3 plus 14 in
+  `test_routes_images.py` for PR 4), covering token middleware,
+  observation store + filters + pagination, status/observations/stream/
+  image routes, and ring-buffer concurrency. Pure additive change to
+  `src/vision/capture.py` (+94 lines, 0 deletions); 59 existing
+  `tests/vision/test_capture.py` cases still pass.
 
 ---
 

@@ -29,6 +29,7 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from .observation_store import ObservationStore
+from .routes import images as images_routes
 from .routes import observations as observations_routes
 from .routes import status as status_routes
 from .routes import stream as stream_routes
@@ -134,6 +135,11 @@ def create_app(
     # 503 when app.state.stream_buffer is None, so it's always safe
     # to mount.
     app.include_router(stream_routes.router)
+
+    # images_routes owns /api/observations/{id}/image/{variant} (PR 4).
+    # Reads the same ObservationStore + on-disk capture files; nothing
+    # extra to wire up.
+    app.include_router(images_routes.router)
 
     logger.info(
         "Avis web dashboard app created (version=%s, observations_path=%s)",

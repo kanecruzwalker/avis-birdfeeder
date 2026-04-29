@@ -213,6 +213,19 @@ class BirdObservation(BaseModel):
         default=None,
         description="Local path to the captured frame image from secondary camera, if saved.",
     )
+    image_path_full: str | None = Field(
+        default=None,
+        description=(
+            "Local path to the full uncropped frame from the primary camera, "
+            "if saved. Populated only on dispatched observations when the "
+            "agent persists the full-frame variant for the dashboard; "
+            "suppressed observations have this as None. "
+            "The annotated variant (full frame with the YOLO bounding box "
+            "drawn over it) is saved alongside on disk when "
+            "detection_box is set; its path is derived from this one by "
+            "swapping the '_full' stem suffix for '_annotated'."
+        ),
+    )
     audio_path: str | None = Field(
         default=None,
         description="Local path to the captured audio clip, if saved.",
