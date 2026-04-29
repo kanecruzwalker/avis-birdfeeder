@@ -587,9 +587,7 @@ def main() -> None:
 
             publisher = SharedFramePublisher(shm_name)
             orchestrator.agent.vision_capture.attach_preview_sink(publisher)
-            logger.info(
-                "Cross-process MJPEG bridge enabled (AVIS_STREAM_SHM=%r).", shm_name
-            )
+            logger.info("Cross-process MJPEG bridge enabled (AVIS_STREAM_SHM=%r).", shm_name)
         except Exception as exc:  # noqa: BLE001 — bridge failure shouldn't block agent
             logger.warning(
                 "Could not attach SHM publisher %r — agent runs without preview "
