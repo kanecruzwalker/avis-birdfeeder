@@ -68,12 +68,10 @@ Hailo configuration semantics:
 
 from __future__ import annotations
 
-import io
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
 
 import numpy as np
 import yaml
@@ -181,35 +179,6 @@ def _maybe_load_gate_detector(config_dir: str | Path) -> object | None:
             exc,
         )
         return None
-
-
-# ---- Live preview sinks (web dashboard MJPEG) -------------------------------
-
-
-class _PreviewSink(Protocol):
-    """Duck-typed sink for preview JPEG bytes (a StreamBuffer)."""
-
-    def publish(self, jpeg_bytes: bytes) -> None: ...
-
-
-class _BoxSource(Protocol):
-    """Duck-typed reader for the latest YOLO box (a BoxCache).
-
-    ``peek_fresh`` returns ``(box, species, confidence, alpha)`` —
-    box in camera-native coordinates — or ``None`` when no fresh
-    box is available. The capture loop scales the box into the
-    preview JPEG's pixel space before drawing.
-
-    Defined locally so this module has no awareness of ``src.web``.
-    """
-
-    def peek_fresh(self) -> tuple[tuple[int, int, int, int], str, float, float] | None: ...
-
-
-# Default preview parameters per docs/investigations/web-dashboard-2026-04-28.md
-# (640x360, q=75 -> ~30KB/frame). Profile on Pi before adjusting.
-_DEFAULT_PREVIEW_SIZE = (640, 360)
-_DEFAULT_PREVIEW_QUALITY = 75
 
 
 # Detection mode constants
@@ -333,10 +302,6 @@ class VisionCapture:
         gate_detector: object | None = None,
         adaptive_min_bbox_dim: int = 250,
         adaptive_centered_size: int = 300,
-        stream_buffer: _PreviewSink | None = None,
-        stream_preview_size: tuple[int, int] = _DEFAULT_PREVIEW_SIZE,
-        stream_preview_quality: int = _DEFAULT_PREVIEW_QUALITY,
-        box_source: _BoxSource | None = None,
     ) -> None:
         """
         Args:
@@ -371,25 +336,6 @@ class VisionCapture:
                                     docs/investigations/hailo-2026-04-22.md).
                                     When False, all inference runs on CPU and no
                                     VDevice is created.
-            stream_buffer:          Optional sink for the live preview MJPEG
-                                    stream (the web dashboard's StreamBuffer).
-                                    When None (default), no preview is published
-                                    and the agent runs unchanged -- this is the
-                                    no-dashboard rollback path. When set, every
-                                    capture cycle pushes a downsized JPEG into
-                                    the sink. See PR 3 of the web dashboard.
-            stream_preview_size:    (width, height) of the preview JPEG before
-                                    encoding. Default 640x360 -- the same aspect
-                                    as the 1536x864 capture, ~30KB at q=75.
-            stream_preview_quality: JPEG quality (1-95) for the preview encode.
-                                    75 trades a small visible-quality hit for
-                                    half the bytes vs q=85; documented in the
-                                    investigation doc.
-            box_source:             Optional reader for the latest YOLO box
-                                    (the web dashboard's BoxCache). When set,
-                                    each preview JPEG is annotated at publish
-                                    time with the cached box scaled to preview
-                                    coordinates. None = no annotation.
         """
         self.primary_index = primary_index
         self.secondary_index = secondary_index
@@ -434,16 +380,6 @@ class VisionCapture:
         # Adaptive crop params (only used when detection_mode="yolo")
         self.adaptive_min_bbox_dim = adaptive_min_bbox_dim
         self.adaptive_centered_size = adaptive_centered_size
-
-        # Live preview sink. None means no dashboard is wired in —
-        # ``_maybe_publish_preview()`` short-circuits and the capture
-        # loop is byte-for-byte identical to no-dashboard behavior.
-        # Dependency arrow stays src.web → src.vision; we duck-type
-        # StreamBuffer / BoxCache rather than import them.
-        self._stream_buffer = stream_buffer
-        self._stream_preview_size = stream_preview_size
-        self._stream_preview_quality = stream_preview_quality
-        self._box_source = box_source
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -737,95 +673,10 @@ class VisionCapture:
             logger.exception("Camera capture failed: %s", exc)
             return None, None
 
-        # Publish to the live preview ring buffer BEFORE the motion
-        # gate fires -- the dashboard wants a continuous stream so an
-        # idle feeder still shows a live image. Single-camera
-        # (primary) by design: the design doc rejects multi-camera
-        # streams as bandwidth waste. No-op when no buffer was
-        # injected.
-        self._maybe_publish_preview(raw0)
-
         result0 = self._process_frame(raw0, camera_index=self.primary_index)
         result1 = self._process_frame(raw1, camera_index=self.secondary_index)
 
         return result0, result1
-
-    def _maybe_publish_preview(self, raw_frame: np.ndarray) -> None:
-        """Encode + publish a downsized JPEG to the preview sink.
-
-        No-op when no sink was configured. Errors are logged and
-        swallowed — the preview is non-essential and an encoding
-        glitch must not crash capture.
-
-        When ``box_source`` is wired in and has a fresh entry, the
-        published JPEG carries the YOLO bounding box drawn at the
-        cache's current alpha. The box is scaled from camera-native
-        pixels to preview pixels here.
-
-        Encoding cost on Pi 5: ~5 ms for the resize+encode, plus
-        ~3-5 ms for annotation when a box is present. At ~5 fps
-        cadence both stay well inside the budget; drop preview
-        size or skip cycles if the watchdog ever flags it.
-        """
-        if self._stream_buffer is None:
-            return
-        try:
-            from PIL import Image  # type: ignore[import]
-
-            img = Image.fromarray(raw_frame)
-            # Explicit resize (not thumbnail) so the output size is
-            # deterministic regardless of input aspect drift.
-            img = img.resize(self._stream_preview_size, Image.Resampling.BILINEAR)
-            buf = io.BytesIO()
-            img.save(buf, format="JPEG", quality=self._stream_preview_quality)
-            jpeg = buf.getvalue()
-
-            jpeg = self._maybe_annotate_preview(jpeg, raw_frame.shape[:2])
-
-            self._stream_buffer.publish(jpeg)
-        except Exception as exc:
-            # Don't let a preview encoding glitch take down capture.
-            logger.warning("Preview publish failed: %s", exc)
-
-    def _maybe_annotate_preview(
-        self,
-        jpeg: bytes,
-        raw_shape: tuple[int, int],
-    ) -> bytes:
-        """Overlay the cached YOLO box on a preview JPEG.
-
-        Returns ``jpeg`` unchanged when no box source is wired or
-        the cache has no fresh entry. The box is scaled from raw
-        camera coordinates to the preview JPEG's pixel space.
-        """
-        if self._box_source is None:
-            return jpeg
-        fresh = self._box_source.peek_fresh()
-        if fresh is None:
-            return jpeg
-        box, species, confidence, alpha = fresh
-
-        src_h, src_w = raw_shape
-        dst_w, dst_h = self._stream_preview_size
-        sx = dst_w / src_w
-        sy = dst_h / src_h
-        x1, y1, x2, y2 = box
-        scaled_box = (int(x1 * sx), int(y1 * sy), int(x2 * sx), int(y2 * sy))
-        label = f"{species} {confidence:.2f}"
-
-        # src.util.frame_annotator is a pure PIL helper — fine to
-        # import from src.vision (the rule we're respecting is the
-        # src.web → src.vision arrow). Local import so PIL only
-        # loads when a box source is actually wired in.
-        from src.util.frame_annotator import annotate_jpeg
-
-        return annotate_jpeg(
-            jpeg,
-            box=scaled_box,
-            label=label,
-            alpha=alpha,
-            quality=self._stream_preview_quality,
-        )
 
     def _adaptive_yolo_crop(
         self,
@@ -1203,14 +1054,3 @@ class VisionCapture:
     def get_shared_vdevice(self) -> object | None:
         """Return the shared Hailo VDevice for use by VisualClassifier."""
         return self._shared_vdevice
-
-    def attach_preview_sink(self, sink: _PreviewSink | None) -> None:
-        """Set or clear the live-preview MJPEG sink after construction.
-
-        Lets the agent's entry point wire a cross-process bridge
-        publisher (see ``src/web/shared_frame_bridge.py``) without
-        threading a kwarg through ``BirdAgent.from_config`` and
-        ``ExperimentOrchestrator.from_config``. Pass ``None`` to
-        disable publishing.
-        """
-        self._stream_buffer = sink

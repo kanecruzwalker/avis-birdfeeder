@@ -66,18 +66,6 @@ cp .env.example .env             # then fill in your values
 python -m src.agent.bird_agent   # start the agent
 ```
 
-## Web dashboard
-
-A separate FastAPI app under `src/web/` exposes a single-page dashboard
-with a live MJPEG preview, observation history (recent / timeline /
-gallery / detail), and a chat proxy to the LLM analyst. Token-auth,
-served over Tailscale by default; an ngrok helper script is included
-for ad-hoc class demos.
-
-See [docs/WEB_DASHBOARD.md](docs/WEB_DASHBOARD.md) for install,
-Tailscale invite flow, ngrok demo flow, token rotation, and
-troubleshooting.
-
 ## Project Structure
 
 ```
