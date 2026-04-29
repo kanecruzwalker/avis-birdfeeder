@@ -125,8 +125,7 @@ def create_app(
     # ── Routes ────────────────────────────────────────────────────────────────
 
     # status_routes owns /health (unauth) and /api/status (auth).
-    app.include_router(status_routes.public_router)
-    app.include_router(status_routes.status_router)
+    app.include_router(status_routes.router)
 
     # observations_routes owns /api/observations and /api/observations/{id}.
     app.include_router(observations_routes.router)

@@ -1,22 +1,18 @@
 """Status + health endpoints.
 
-``/health``       — unauthenticated liveness check (used by Tailscale
-                    and any external monitor)
-``/api/status``   — authenticated, returns dashboard uptime, agent
-                    status, and a few headline counts derived from
-                    ``observations.jsonl``
+``/health``      — unauthenticated liveness check (Tailscale, monitors)
+``/api/status``  — authenticated; uptime, agent status heuristic, counts
 
 The agent and dashboard run as separate systemd units, so the
-dashboard can't ask the agent "are you alive?" directly. Instead we
-check how recently ``observations.jsonl`` was updated:
+dashboard can't ask the agent "are you alive?" directly. We fall
+back to the freshness of ``observations.jsonl``:
 
-    < 60s ago    →  "live"
-    < 10min ago  →  "idle"
-    older / missing →  "stale"
+    < 60s ago        →  "live"
+    < 10min ago      →  "idle"
+    older / missing  →  "stale"
 
-That's a heuristic, not a contract — empty feeders look the same as
-crashed agents to this check. Good enough for the dashboard's status
-chip; not good enough for paging.
+Heuristic, not a contract — empty feeders look the same as crashed
+agents to this check. Good enough for a status chip; not for paging.
 """
 
 from __future__ import annotations
@@ -30,36 +26,20 @@ from pydantic import BaseModel, Field
 from ..auth import RequireToken
 from ..observation_store import ObservationStore
 
-# ── Routers ───────────────────────────────────────────────────────────────────
+# One router; auth is per-route. /health stays public.
+router = APIRouter(tags=["status"])
 
-# /health stays unauthenticated. Mounted on its own router so we
-# don't accidentally attach RequireToken to it later.
-public_router = APIRouter(tags=["public"])
-
-# /api/status sits behind the token wall.
-status_router = APIRouter(prefix="/api", tags=["status"], dependencies=[RequireToken])
-
-
-# ── Heuristic thresholds ──────────────────────────────────────────────────────
 
 _LIVE_THRESHOLD_SECONDS = 60
 _IDLE_THRESHOLD_SECONDS = 10 * 60
-
-
-# ── App-state accessors ──────────────────────────────────────────────────────
 
 
 def _store(request: Request) -> ObservationStore:
     return request.app.state.observation_store
 
 
-def _start_time(request: Request) -> float:
-    """Monotonic-ish start time recorded by the factory.
-
-    Stored as a Unix timestamp (``time.time()``) so the difference
-    against ``time.time()`` here gives uptime in seconds.
-    """
-    return request.app.state.start_time
+def _to_utc(ts: datetime) -> datetime:
+    return ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts.astimezone(UTC)
 
 
 # ── Response models ──────────────────────────────────────────────────────────
@@ -72,8 +52,6 @@ class HealthResponse(BaseModel):
 
 
 class StatusResponse(BaseModel):
-    """Body of ``GET /api/status``."""
-
     service: str
     version: str
     uptime_seconds: float
@@ -85,44 +63,26 @@ class StatusResponse(BaseModel):
         default=None,
         description=(
             "Most recent observation's ``detection_mode`` "
-            "(``fixed_crop`` or ``yolo``). ``None`` when the file "
-            "is empty."
+            "(``fixed_crop`` or ``yolo``); ``None`` when the file is empty."
         ),
     )
     agent_status: str = Field(
-        description=(
-            "Heuristic from observations.jsonl mtime: ``live`` "
-            "(<60s), ``idle`` (<10min), or ``stale``."
-        ),
+        description="``live`` (<60s), ``idle`` (<10min), or ``stale``.",
     )
 
 
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 
-@public_router.get("/health", response_model=HealthResponse)
+@router.get("/health", response_model=HealthResponse)
 def health(request: Request) -> HealthResponse:
-    """Unauthenticated liveness check.
-
-    Returns just status, service, and version. No observation data,
-    no token state — auth on every other route is what actually
-    protects the dashboard.
-    """
-    return HealthResponse(
-        status="ok",
-        service="avis-web",
-        version=request.app.version,
-    )
+    """Unauthenticated liveness check."""
+    return HealthResponse(status="ok", service="avis-web", version=request.app.version)
 
 
-@status_router.get("/status", response_model=StatusResponse)
+@router.get("/api/status", response_model=StatusResponse, dependencies=[RequireToken])
 def status(request: Request) -> StatusResponse:
-    """Dashboard status snapshot.
-
-    Pulls counts and the most-recent record from the observation
-    store. Cheap because the store caches by mtime — repeat calls
-    don't re-read the file.
-    """
+    """Dashboard status snapshot — counts, uptime, agent freshness."""
     store = _store(request)
     latest = store.latest()
     latest_dispatched = store.latest_dispatched()
@@ -141,7 +101,7 @@ def status(request: Request) -> StatusResponse:
     return StatusResponse(
         service="avis-web",
         version=request.app.version,
-        uptime_seconds=max(0.0, now - _start_time(request)),
+        uptime_seconds=max(0.0, now - request.app.state.start_time),
         total_observations=store.total(),
         total_dispatched=store.total_dispatched(),
         last_observation_at=_to_utc(latest.timestamp) if latest else None,
@@ -149,14 +109,3 @@ def status(request: Request) -> StatusResponse:
         current_mode=latest.detection_mode if latest else None,
         agent_status=agent_status,
     )
-
-
-# ── Helpers ──────────────────────────────────────────────────────────────────
-
-
-def _to_utc(ts: datetime) -> datetime:
-    """Return ``ts`` in UTC. Handles naive datetimes by assuming UTC,
-    matching the schema's ``_utcnow`` default."""
-    if ts.tzinfo is None:
-        return ts.replace(tzinfo=UTC)
-    return ts.astimezone(UTC)
