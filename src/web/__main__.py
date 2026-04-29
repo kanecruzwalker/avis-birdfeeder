@@ -31,50 +31,18 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import sys
 from pathlib import Path
 
 import uvicorn
 import yaml
+from dotenv import load_dotenv
 
 from .app import create_app
 from .auth import AuthConfigError, get_configured_token
 from .stream_buffer import StreamBuffer
 
 logger = logging.getLogger(__name__)
-
-
-# ── .env loading ──────────────────────────────────────────────────────────────
-
-
-def _load_dotenv(path: Path) -> None:
-    """Load ``KEY=VALUE`` pairs from a ``.env`` file into ``os.environ``.
-
-    We don't pull in python-dotenv as a dependency for this — the
-    format we accept is the simple subset already used by the rest of
-    the project: lines of ``KEY=VALUE``, ignore blank lines and ``#``
-    comments. Quoted values have surrounding quotes stripped. Existing
-    environment variables take precedence — ``.env`` only fills gaps.
-    """
-    if not path.exists():
-        return
-    with path.open(encoding="utf-8") as fh:
-        for raw in fh:
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            key = key.strip()
-            value = value.strip()
-            # Strip matching surrounding quotes
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-                value = value[1:-1]
-            # Existing env wins
-            if key not in os.environ:
-                os.environ[key] = value
 
 
 # ── observations.jsonl resolution ────────────────────────────────────────────
@@ -177,8 +145,9 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    # 1. Load .env (silent if missing — not required for tests)
-    _load_dotenv(args.env_file)
+    # 1. Load .env (silent if missing — not required for tests).
+    #    override=False matches the prior behavior: existing env wins.
+    load_dotenv(args.env_file, override=False)
 
     # 2. Check the token before binding the socket — fail with a clear
     #    message at startup instead of returning 500 on the first

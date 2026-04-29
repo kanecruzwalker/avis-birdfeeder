@@ -73,7 +73,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 
 import numpy as np
 import yaml
@@ -186,7 +186,6 @@ def _maybe_load_gate_detector(config_dir: str | Path) -> object | None:
 # ---- Live preview sink (PR 3 -- web dashboard MJPEG) ------------------------
 
 
-@runtime_checkable
 class _PreviewSink(Protocol):
     """Duck-typed sink for the live preview MJPEG stream.
 
@@ -198,6 +197,8 @@ class _PreviewSink(Protocol):
 
     Defined locally so this module has zero awareness of the web
     package. The real type is src.web.stream_buffer.StreamBuffer.
+    Used only as a type hint -- runtime is plain duck-typing on
+    publish(), no isinstance() check.
     """
 
     def publish(self, jpeg_bytes: bytes) -> None: ...
