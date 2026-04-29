@@ -68,10 +68,12 @@ Hailo configuration semantics:
 
 from __future__ import annotations
 
+import io
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 import numpy as np
 import yaml
@@ -179,6 +181,32 @@ def _maybe_load_gate_detector(config_dir: str | Path) -> object | None:
             exc,
         )
         return None
+
+
+# ---- Live preview sink (PR 3 -- web dashboard MJPEG) ------------------------
+
+
+@runtime_checkable
+class _PreviewSink(Protocol):
+    """Duck-typed sink for the live preview MJPEG stream.
+
+    The web dashboard's StreamBuffer matches this shape, but
+    src.vision deliberately does not import from src.web -- capture
+    stays runnable without the dashboard, and the dependency arrow
+    points the other way (web -> vision). Tests pass any object
+    exposing a publish(bytes) method.
+
+    Defined locally so this module has zero awareness of the web
+    package. The real type is src.web.stream_buffer.StreamBuffer.
+    """
+
+    def publish(self, jpeg_bytes: bytes) -> None: ...
+
+
+# Default preview parameters per docs/investigations/web-dashboard-2026-04-28.md
+# (640x360, q=75 -> ~30KB/frame). Profile on Pi before adjusting.
+_DEFAULT_PREVIEW_SIZE = (640, 360)
+_DEFAULT_PREVIEW_QUALITY = 75
 
 
 # Detection mode constants
@@ -302,6 +330,9 @@ class VisionCapture:
         gate_detector: object | None = None,
         adaptive_min_bbox_dim: int = 250,
         adaptive_centered_size: int = 300,
+        stream_buffer: _PreviewSink | None = None,
+        stream_preview_size: tuple[int, int] = _DEFAULT_PREVIEW_SIZE,
+        stream_preview_quality: int = _DEFAULT_PREVIEW_QUALITY,
     ) -> None:
         """
         Args:
@@ -336,6 +367,20 @@ class VisionCapture:
                                     docs/investigations/hailo-2026-04-22.md).
                                     When False, all inference runs on CPU and no
                                     VDevice is created.
+            stream_buffer:          Optional sink for the live preview MJPEG
+                                    stream (the web dashboard's StreamBuffer).
+                                    When None (default), no preview is published
+                                    and the agent runs unchanged -- this is the
+                                    no-dashboard rollback path. When set, every
+                                    capture cycle pushes a downsized JPEG into
+                                    the sink. See PR 3 of the web dashboard.
+            stream_preview_size:    (width, height) of the preview JPEG before
+                                    encoding. Default 640x360 -- the same aspect
+                                    as the 1536x864 capture, ~30KB at q=75.
+            stream_preview_quality: JPEG quality (1-95) for the preview encode.
+                                    75 trades a small visible-quality hit for
+                                    half the bytes vs q=85; documented in the
+                                    investigation doc.
         """
         self.primary_index = primary_index
         self.secondary_index = secondary_index
@@ -380,6 +425,15 @@ class VisionCapture:
         # Adaptive crop params (only used when detection_mode="yolo")
         self.adaptive_min_bbox_dim = adaptive_min_bbox_dim
         self.adaptive_centered_size = adaptive_centered_size
+
+        # Live preview sink (PR 3). None means no dashboard is wired
+        # in -- _maybe_publish_preview() short-circuits and the
+        # capture loop is byte-for-byte identical to pre-PR-3
+        # behavior. The dependency arrow stays src.web -> src.vision;
+        # we never import StreamBuffer here, only duck-type it.
+        self._stream_buffer = stream_buffer
+        self._stream_preview_size = stream_preview_size
+        self._stream_preview_quality = stream_preview_quality
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -673,10 +727,50 @@ class VisionCapture:
             logger.exception("Camera capture failed: %s", exc)
             return None, None
 
+        # Publish to the live preview ring buffer BEFORE the motion
+        # gate fires -- the dashboard wants a continuous stream so an
+        # idle feeder still shows a live image. Single-camera
+        # (primary) by design: the design doc rejects multi-camera
+        # streams as bandwidth waste. No-op when no buffer was
+        # injected.
+        self._maybe_publish_preview(raw0)
+
         result0 = self._process_frame(raw0, camera_index=self.primary_index)
         result1 = self._process_frame(raw1, camera_index=self.secondary_index)
 
         return result0, result1
+
+    def _maybe_publish_preview(self, raw_frame: np.ndarray) -> None:
+        """Encode and publish a downsized JPEG to the live preview sink.
+
+        No-op when no sink was configured -- preserves legacy
+        capture-loop behavior for deployments that do not run the
+        dashboard. Errors are logged and swallowed: the preview is
+        non-essential, so an encoding failure must not crash capture.
+
+        Encoding cost on the Pi 5 (measured at design time): ~5ms
+        for a 640x360 q=75 JPEG. At ~5fps capture cadence this is
+        well within budget. If the watchdog ever flags this we can
+        drop to 480x270 or skip every other frame -- see the risks
+        table in docs/investigations/web-dashboard-2026-04-28.md.
+        """
+        if self._stream_buffer is None:
+            return
+        try:
+            from PIL import Image  # type: ignore[import]
+
+            img = Image.fromarray(raw_frame)
+            # Explicit resize (not thumbnail) so the output size is
+            # deterministic regardless of input aspect drift.
+            img = img.resize(self._stream_preview_size, Image.Resampling.BILINEAR)
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=self._stream_preview_quality)
+            self._stream_buffer.publish(buf.getvalue())
+        except Exception as exc:
+            # Don't let a preview encoding glitch take down capture.
+            # Logged at warning level so operators see persistent
+            # issues, but a single bad frame is recoverable.
+            logger.warning("Preview publish failed: %s", exc)
 
     def _adaptive_yolo_crop(
         self,

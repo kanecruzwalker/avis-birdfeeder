@@ -1,0 +1,98 @@
+# scripts/avis-web.service
+#
+# Systemd service unit for the Avis web dashboard.
+#
+# Independent of avis.service — stopping the dashboard doesn't
+# affect the agent, and vice versa. Per the rollback plan in
+# docs/investigations/web-dashboard-2026-04-28.md, disabling this
+# unit removes the dashboard without touching the agent.
+#
+# ── Installation (run once on Pi) ────────────────────────────────────────────
+#
+#   sudo cp /mnt/data/avis-birdfeeder/scripts/avis-web.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable avis-web
+#   sudo systemctl start avis-web
+#
+# ── Status and logs ───────────────────────────────────────────────────────────
+#
+#   sudo systemctl status avis-web         # one-line health check
+#   sudo journalctl -u avis-web -f         # live log tail
+#   sudo journalctl -u avis-web --since today
+#
+# ── Stop / restart ────────────────────────────────────────────────────────────
+#
+#   sudo systemctl stop avis-web
+#   sudo systemctl restart avis-web
+#
+# ── Disable autostart ────────────────────────────────────────────────────────
+#
+#   sudo systemctl disable avis-web
+#
+# ── Why these specific settings ──────────────────────────────────────────────
+#
+#   After=network.target
+#       The dashboard binds a TCP socket; ensure the network stack is
+#       up before we try. Tailscale separately — tailscaled comes up on
+#       its own and the dashboard reaches it once both are running.
+#
+#   WorkingDirectory=/mnt/data/avis-birdfeeder
+#       All relative paths in configs/ are resolved from project root.
+#       src/ imports use relative paths — must run from project root.
+#
+#   Environment=PYTHONPATH=/mnt/data/avis-birdfeeder
+#       Makes src/ importable without installing the package. Mirrors
+#       the manual run command in the dev workflow.
+#
+#   EnvironmentFile=/mnt/data/avis-birdfeeder/.env
+#       Loads AVIS_WEB_TOKEN (and Pushover keys, since the agent's
+#       .env is shared) into the process environment. The .env file
+#       is gitignored — credentials stay off GitHub.
+#
+#   ExecStart binds to 0.0.0.0 so Tailscale peers can reach it. Auth
+#   is the security boundary; do not run without AVIS_WEB_TOKEN set.
+#
+#   Restart=on-failure / RestartSec=15
+#       If the process crashes (e.g. uvicorn worker error), systemd
+#       restarts it after 15s. Long enough to avoid restart storms,
+#       short enough that the dashboard self-heals before anyone
+#       notices.
+#
+#   StandardOutput=journal / StandardError=journal
+#       All Python logging output goes to systemd journal.
+#       Retrieve with: sudo journalctl -u avis-web
+#
+#   User=birdfeeder01
+#       Runs under the normal Pi user, not root. Same user as the
+#       agent so log file ownership is consistent.
+#
+# ── Security note ────────────────────────────────────────────────────────────
+#
+#   The dashboard binds 0.0.0.0:8000 and is protected only by
+#   AVIS_WEB_TOKEN. Tailscale keeps it off the public internet — port
+#   8000 is reachable only from peers on the tailnet. For class demos
+#   use ngrok and tear it down after; never port-forward from the
+#   home router.
+
+[Unit]
+Description=Avis web dashboard (FastAPI)
+Documentation=https://github.com/kanecruzwalker/avis-birdfeeder
+After=network.target
+
+[Service]
+Type=simple
+User=birdfeeder01
+WorkingDirectory=/mnt/data/avis-birdfeeder
+Environment=PYTHONPATH=/mnt/data/avis-birdfeeder
+EnvironmentFile=/mnt/data/avis-birdfeeder/.env
+ExecStart=/mnt/data/avis-venv/bin/python -m src.web --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=15
+KillSignal=SIGTERM
+TimeoutStopSec=15
+StandardOutput=journal
+StandardError=journal
+
+
+[Install]
+WantedBy=multi-user.target
