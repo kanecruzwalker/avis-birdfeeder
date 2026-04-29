@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#f7f1e6">
+  <title>Avis</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body data-theme="warm-light" data-view="live">
+
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="#/live" class="brand" data-nav="live">Avis</a>
+      <nav class="topbar-nav">
+        <a href="#/live" data-nav="live" class="nav-link">Live</a>
+        <a href="#/recent" data-nav="recent" class="nav-link">Recent</a>
+      </nav>
+      <div class="topbar-spacer"></div>
+      <div class="agent-chip" id="agent-chip" aria-label="Agent status">
+        <span class="agent-chip-dot" data-state="unknown"></span>
+        <span class="agent-chip-label" id="agent-chip-label">…</span>
+      </div>
+
+      <div class="theme-switcher" role="radiogroup" aria-label="Theme palette">
+        <button type="button" data-theme-palette="warm" aria-pressed="true" aria-label="Warm theme">
+          <span class="theme-dot theme-dot-warm"></span>
+        </button>
+        <button type="button" data-theme-palette="pollen" aria-pressed="false" aria-label="Pollen theme">
+          <span class="theme-dot theme-dot-pollen"></span>
+        </button>
+        <button type="button" data-theme-palette="mono" aria-pressed="false" aria-label="Mono theme">
+          <span class="theme-dot theme-dot-mono"></span>
+        </button>
+        <button type="button" data-theme-mode-toggle aria-label="Toggle light or dark mode">
+          <svg id="theme-mode-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="4"/>
+            <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="content">
+
+    <!-- ── No-token gate: shown when the SPA has no AVIS_WEB_TOKEN cached ── -->
+    <section class="view view-token-gate" data-view="token-gate">
+      <div class="empty-state">
+        <h1>Avis</h1>
+        <p class="muted">No access token found.</p>
+        <p>Open this dashboard with <code>?token=&lt;your AVIS_WEB_TOKEN&gt;</code> in the URL once.<br>
+          The SPA will remember it for next time.</p>
+      </div>
+    </section>
+
+    <!-- ── Live view: MJPEG stream + agent status ──────────────────────── -->
+    <section class="view view-live" data-view="live">
+      <div class="live-stage">
+        <img id="live-stream" alt="Live preview from the feeder" />
+        <div class="live-overlay" id="live-overlay" hidden>
+          <span class="live-overlay-text" id="live-overlay-text">Waiting for first frame…</span>
+        </div>
+      </div>
+      <aside class="live-meta">
+        <div class="live-meta-row">
+          <span class="muted">Last detection</span>
+          <strong id="live-last-detection">—</strong>
+        </div>
+        <div class="live-meta-row">
+          <span class="muted">Total observations</span>
+          <strong id="live-total">—</strong>
+        </div>
+        <div class="live-meta-row">
+          <span class="muted">Total dispatched</span>
+          <strong id="live-dispatched">—</strong>
+        </div>
+        <div class="live-meta-row">
+          <span class="muted">Mode</span>
+          <strong id="live-mode">—</strong>
+        </div>
+        <div class="live-meta-row">
+          <span class="muted">Uptime</span>
+          <strong id="live-uptime">—</strong>
+        </div>
+      </aside>
+    </section>
+
+    <!-- ── Recent view: card list of dispatched observations ──────────── -->
+    <section class="view view-recent" data-view="recent">
+      <div class="view-header">
+        <h1>Recent detections</h1>
+        <label class="toggle">
+          <input type="checkbox" id="recent-show-suppressed" />
+          <span>Show suppressed</span>
+        </label>
+      </div>
+      <div class="recent-list" id="recent-list" aria-live="polite">
+        <div class="empty-state" id="recent-empty">Loading…</div>
+      </div>
+      <div class="recent-load-more">
+        <button class="btn" id="recent-load-more" hidden>Load more</button>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ── Toast notifications ──────────────────────────────────────────── -->
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

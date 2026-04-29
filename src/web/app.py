@@ -16,11 +16,13 @@ import time
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from .box_cache import BoxCache
 from .observation_store import ObservationStore
 from .routes import images as images_routes
 from .routes import observations as observations_routes
+from .routes import pages as pages_routes
 from .routes import status as status_routes
 from .routes import stream as stream_routes
 from .stream_buffer import StreamBuffer
@@ -88,10 +90,21 @@ def create_app(
     app.state.stream_wait_timeout = _DEFAULT_STREAM_WAIT_TIMEOUT_SECONDS
     app.state.box_cache = box_cache
 
+    app.include_router(pages_routes.router)  # GET /
     app.include_router(status_routes.router)  # /health + /api/status
     app.include_router(observations_routes.router)  # /api/observations*
     app.include_router(stream_routes.router)  # /api/stream + /api/frame
     app.include_router(images_routes.router)  # /api/observations/{id}/image/*
+
+    # /static/* serves the SPA bundle (CSS, JS, fonts). No auth — the
+    # bundle is a generic dashboard shell with no secrets. Mount last
+    # so the explicit /api/* and / routes win on path collisions.
+    pages_routes.STATIC_DIR.mkdir(parents=True, exist_ok=True)
+    app.mount(
+        "/static",
+        StaticFiles(directory=str(pages_routes.STATIC_DIR)),
+        name="static",
+    )
 
     logger.info(
         "Avis web dashboard app created (version=%s, observations_path=%s)",

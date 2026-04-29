@@ -65,13 +65,35 @@ Versioning follows [Semantic Versioning](https://semver.org/).
     publishing. Annotation happens at publish time (single CPU
     cost regardless of viewer count), keeping all box-dependent
     work in the agent process.
+  - PR 6: HTML SPA — live + recent views. New
+    `src/web/routes/pages.py` (`GET /` serves the dashboard shell,
+    no auth — the bundle has no secrets, and the SPA's first boot
+    needs to read `?token=` from the URL before any API call).
+    New `src/web/static/` bundle: `index.html`, `styles.css` (six
+    themes lifted from `tools/labeler/ui` for visual consistency,
+    plus dashboard-specific components — agent chip, live stage,
+    observation cards, suppressed toggle, toast), `app.js` (token
+    bootstrap → URL strip → localStorage cache, hash router for
+    `#/live` ↔ `#/recent`, theme switcher, 30 s status poll), and
+    `views/{live,recent}.js` (split per the investigation doc's
+    SPA layout). The recent view colour-codes confidence (low/mid/
+    high) and visually distinguishes dispatched vs suppressed so
+    the deployment-data narrative ("scene-floor noise vs real
+    birds") stays legible in the UI. Tri-state filter
+    `dispatched=all` added to `/api/observations` for the SPA's
+    "Show suppressed" toggle (the route's previous `bool | None`
+    contract docstring claimed this behavior but FastAPI rejected
+    non-bool values — small route fix to match the contract).
 - New tests: 16 in `tests/web/test_box_cache.py` (TTL, fade,
   thread-safety), 10 in `tests/util/test_frame_annotator.py`
   (round-trip, alpha fast-path, pixel sanity, robustness), 6 in
-  `tests/vision/test_capture_preview.py` (publish-path
-  integration with fake stream-buffer + box-source). 275 total
-  tests passing across web, util, vision (excluding torch-heavy
-  modules), data, and labeler-auth suites. Pure additive change to
+  `tests/vision/test_capture_preview.py` (publish-path integration
+  with fake stream-buffer + box-source), 11 in
+  `tests/web/test_routes_pages.py` (HTML shell, static bundle,
+  auth boundary), 2 added to `tests/web/test_routes_observations.py`
+  (`dispatched=all` tri-state, 422 on garbage). 288 total tests
+  passing across web, util, vision (excluding torch-heavy modules),
+  data, and labeler-auth suites. Pure additive change to
   `src/vision/capture.py` (+94 lines, 0 deletions); 59 existing
   `tests/vision/test_capture.py` cases still pass.
 

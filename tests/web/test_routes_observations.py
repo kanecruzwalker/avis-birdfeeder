@@ -167,6 +167,22 @@ class TestFilters:
         assert body["count"] == 1
         assert all(not i["dispatched"] for i in body["items"])
 
+    def test_dispatched_all_returns_both(self, populated):
+        """``dispatched=all`` returns dispatched + suppressed records,
+        used by the dashboard's ``Show suppressed`` toggle."""
+        client, _ = populated
+        body = client.get("/api/observations?dispatched=all", headers=HEADERS).json()
+        # Fixture has 5 dispatched + 1 suppressed.
+        assert body["count"] == 6
+        statuses = [i["dispatched"] for i in body["items"]]
+        assert True in statuses
+        assert False in statuses
+
+    def test_dispatched_invalid_value_rejected(self, populated):
+        client, _ = populated
+        r = client.get("/api/observations?dispatched=garbage", headers=HEADERS)
+        assert r.status_code == 422
+
     def test_from_filter_inclusive(self, populated):
         client, obs = populated
         cutoff = obs[3].timestamp
