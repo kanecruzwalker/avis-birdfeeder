@@ -86,6 +86,7 @@ class BirdAgent:
         loop_interval_seconds: float = 1.0,
         confidence_threshold: float = 0.7,
         cooldown_seconds: float = 30.0,
+        box_cache: object | None = None,
     ) -> None:
         """
         Args:
@@ -100,6 +101,13 @@ class BirdAgent:
             cooldown_seconds:      Suppress repeat notifications for same species
                                    within this window. Prevents spam when a bird
                                    lingers at the feeder.
+            box_cache:             Optional duck-typed cache (a ``BoxCache``)
+                                   that stores the most recent YOLO box +
+                                   classification for the live preview to
+                                   overlay. When None, no boxes are recorded.
+                                   Independent of dispatch — boxes are cached
+                                   for any classified frame, including ones
+                                   suppressed by confidence or cooldown.
         """
         if audio_classifier is None and visual_classifier is None:
             raise ValueError("At least one of audio_classifier or visual_classifier must be set.")
@@ -113,6 +121,7 @@ class BirdAgent:
         self.loop_interval_seconds = loop_interval_seconds
         self.confidence_threshold = confidence_threshold
         self.cooldown_seconds = cooldown_seconds
+        self.box_cache = box_cache
         self._running = False
 
         # Cooldown tracking: species_code → last dispatch datetime (UTC)
@@ -374,6 +383,22 @@ class BirdAgent:
             visual_result=visual_result,
             visual_result_2=visual_result_2,
         )
+
+        # ── Step 7.5: Cache the YOLO box for the live preview ────────────────
+        # Updated regardless of dispatch outcome: the user sees a flash of
+        # box-with-label even when the cooldown gate later suppresses, so
+        # the preview reflects what the agent actually saw. No-op when the
+        # gate detector didn't return a box or no box_cache is wired in.
+        if (
+            self.box_cache is not None
+            and capture_primary is not None
+            and capture_primary.detection_box is not None
+        ):
+            self.box_cache.update(
+                capture_primary.detection_box,
+                observation.species_code,
+                observation.fused_confidence,
+            )
 
         # ── Step 8: Confidence threshold gate ─────────────────────────────────
         # Populate media paths BEFORE gate checks so suppressed observations

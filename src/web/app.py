@@ -17,6 +17,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
+from .box_cache import BoxCache
 from .observation_store import ObservationStore
 from .routes import images as images_routes
 from .routes import observations as observations_routes
@@ -44,6 +45,7 @@ _DEFAULT_STREAM_WAIT_TIMEOUT_SECONDS = 5.0
 def create_app(
     observations_path: Path | None = None,
     stream_buffer: StreamBuffer | None = None,
+    box_cache: BoxCache | None = None,
 ) -> FastAPI:
     """Build and configure a FastAPI app for the web dashboard.
 
@@ -55,9 +57,13 @@ def create_app(
         stream_buffer: Optional shared :class:`StreamBuffer` populated
             by the agent's ``VisionCapture``. When set, ``/api/stream``
             and ``/api/frame`` serve from it; when ``None``, those
-            endpoints return 503. The dashboard runs as its own systemd
-            unit, so in production the buffer is wired in only when
-            both processes share memory.
+            endpoints return 503.
+        box_cache: Optional shared :class:`BoxCache`. The agent updates
+            it after each YOLO classification; ``VisionCapture`` reads
+            it at publish time and overlays the box on preview frames.
+            The dashboard process stashes it on app state for symmetry
+            with the stream buffer and for any future per-route
+            consumer (e.g. a status chip showing the current detection).
     """
     if observations_path is None:
         observations_path = _DEFAULT_OBSERVATIONS_PATH
@@ -80,6 +86,7 @@ def create_app(
     app.state.start_time = time.time()
     app.state.stream_buffer = stream_buffer
     app.state.stream_wait_timeout = _DEFAULT_STREAM_WAIT_TIMEOUT_SECONDS
+    app.state.box_cache = box_cache
 
     app.include_router(status_routes.router)  # /health + /api/status
     app.include_router(observations_routes.router)  # /api/observations*

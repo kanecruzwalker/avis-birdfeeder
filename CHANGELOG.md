@@ -48,10 +48,30 @@ Versioning follows [Semantic Versioning](https://semver.org/).
     `image_path_full` by suffix swap, so the schema stays minimal. 404
     when the variant's path field is `None` or the file is missing on
     disk.
-- 153 new tests in `tests/web/` total (139 from PRs 1–3 plus 14 in
-  `test_routes_images.py` for PR 4), covering token middleware,
-  observation store + filters + pagination, status/observations/stream/
-  image routes, and ring-buffer concurrency. Pure additive change to
+  - PR 5: box cache + live-preview annotation. New
+    `src/web/box_cache.py` (single-slot cache with monotonic-time TTL
+    and linear fade — defaults 3 s TTL with the trailing 1 s fading
+    to alpha 0). New `src/util/frame_annotator.py` (pure PIL helper
+    that decodes a JPEG, alpha-composites a green box + label, and
+    re-encodes; lives in `src.util` so `src.vision` can import it
+    without inverting the `src.web → src.vision` dependency arrow).
+    `BirdAgent.__init__` accepts an optional `box_cache`; after
+    fusion (regardless of dispatch outcome), the cache is updated
+    with the latest YOLO box + species + confidence so suppressed
+    detections still flash a box in the live preview.
+    `VisionCapture.__init__` accepts an optional `box_source`; when
+    set, `_maybe_publish_preview` scales the cached camera-native
+    box to the preview JPEG's pixel space and overlays it before
+    publishing. Annotation happens at publish time (single CPU
+    cost regardless of viewer count), keeping all box-dependent
+    work in the agent process.
+- New tests: 16 in `tests/web/test_box_cache.py` (TTL, fade,
+  thread-safety), 10 in `tests/util/test_frame_annotator.py`
+  (round-trip, alpha fast-path, pixel sanity, robustness), 6 in
+  `tests/vision/test_capture_preview.py` (publish-path
+  integration with fake stream-buffer + box-source). 275 total
+  tests passing across web, util, vision (excluding torch-heavy
+  modules), data, and labeler-auth suites. Pure additive change to
   `src/vision/capture.py` (+94 lines, 0 deletions); 59 existing
   `tests/vision/test_capture.py` cases still pass.
 

@@ -40,6 +40,7 @@ from dotenv import load_dotenv
 
 from .app import create_app
 from .auth import AuthConfigError, get_configured_token
+from .box_cache import BoxCache
 from .stream_buffer import StreamBuffer
 
 logger = logging.getLogger(__name__)
@@ -193,22 +194,18 @@ def main(argv: list[str] | None = None) -> int:
     print("=" * 64)
     print()
 
-    # 5. Build the app. The factory is cheap so tests can construct
-    #    it freely.
-    #
-    #    The stream buffer is allocated unconditionally so the API
-    #    contract is stable: /api/stream + /api/frame are always
-    #    mounted, and they 503 cleanly when no publisher is wired
-    #    in. In production with avis-web.service running standalone
-    #    (no in-process VisionCapture) that's the steady state until
-    #    the cross-process bridge lands. When something later wants
-    #    to publish (e.g., a future agent-side thread or an MQTT
-    #    bridge), the buffer is already there.
+    # 5. Build the app. Stream buffer + box cache are allocated
+    #    unconditionally so the API contract is stable: routes 503
+    #    cleanly when no in-process publisher exists. Production
+    #    standalone-dashboard mode stays in that state until the
+    #    cross-process bridge lands.
     stream_buffer = StreamBuffer()
+    box_cache = BoxCache()
     try:
         app = create_app(
             observations_path=obs_path,
             stream_buffer=stream_buffer,
+            box_cache=box_cache,
         )
     except Exception as exc:  # noqa: BLE001 — surface any startup error cleanly
         print(f"ERROR: failed to build app: {exc}", file=sys.stderr)
