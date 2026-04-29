@@ -10,6 +10,40 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+### Added
+- **Phase 8C — web dashboard backend** (`feat/web-dashboard`, three commits).
+  - PR 1 (`aca13d4`): FastAPI scaffold under `src/web/` with `AVIS_WEB_TOKEN`
+    middleware (header or `?token=` query, `hmac.compare_digest`), `/health`
+    as the only public route, and an independent `scripts/avis-web.service`
+    systemd unit so stopping the dashboard never touches the agent. CLI
+    validates the token before binding the socket. See
+    `docs/investigations/web-dashboard-2026-04-28.md` for the full design.
+  - PR 2 (`aad00c4`): read-only API over `logs/observations.jsonl`. New
+    endpoints: `GET /api/status` (uptime, counts, agent_status heuristic
+    derived from the file's mtime), `GET /api/observations` (newest-first
+    cursor pagination with from/to/species/dispatched filters, limit
+    clamped to 500), `GET /api/observations/{id}`. ID convention:
+    `YYYYMMDDTHHMMSSffffff` UTC, sortable and reversible. The store is
+    mtime-cached and thread-safe; the dashboard never writes to the file.
+  - PR 3 (`b283c2b`): live MJPEG preview. New `src/web/stream_buffer.py`
+    fixed-size ring (default 30 frames, ~1MB) with thread-safe
+    `publish()` / `subscribe()`; condvar wakes subscribers; configurable
+    subscriber cap (default 5) maps overflow to 503 + `Retry-After`.
+    `VisionCapture.capture_frames()` publishes a 640×360 q=75 JPEG every
+    cycle into an injected sink — no-op when the sink is `None`, so the
+    agent stays runnable without the dashboard. New endpoints:
+    `GET /api/stream` (multipart/x-mixed-replace MJPEG) and
+    `GET /api/frame` (single most-recent JPEG). Per-frame wait timeout
+    configurable via `app.state.stream_wait_timeout` (5 s prod, 0.3 s in
+    tests).
+- 139 new tests in `tests/web/`, covering token middleware, observation
+  store + filters + pagination, status/observations/stream routes, and
+  ring-buffer concurrency. Pure additive change to `src/vision/capture.py`
+  (+94 lines, 0 deletions); 59 existing `tests/vision/test_capture.py`
+  cases still pass.
+
+---
+
   ### Fixed
 - Orchestrator A/B rotation timer now fires unconditionally on schedule.
   Previously, when the LLM analyst path was active and the LLM consistently
