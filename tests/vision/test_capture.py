@@ -23,7 +23,7 @@ Markers:
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -34,8 +34,8 @@ from src.vision.capture import CaptureResult, VisionCapture
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 # Matches hardware.yaml defaults
-_CAPTURE_W, _CAPTURE_H = 1536, 864
-_CROP_X, _CROP_Y, _CROP_W, _CROP_H = 568, 232, 400, 400
+_CAPTURE_W, _CAPTURE_H = 2304, 1296
+_CROP_X, _CROP_Y, _CROP_W, _CROP_H = 852, 348, 600, 600
 _CLASS_W, _CLASS_H = 224, 224
 
 
@@ -52,7 +52,7 @@ def _make_capture(tmp_path: Path, **kwargs) -> VisionCapture:
         secondary_index=1,
         capture_width=_CAPTURE_W,
         capture_height=_CAPTURE_H,
-        capture_fps=120,
+        capture_fps=30,
         classification_width=_CLASS_W,
         classification_height=_CLASS_H,
         crop_x=_CROP_X,
@@ -128,6 +128,51 @@ class TestVisionCaptureInit:
     def test_from_config_output_dir_is_absolute(self) -> None:
         vc = VisionCapture.from_config("configs/")
         assert vc.output_dir.is_absolute()
+
+
+# ── TestHailoVDeviceCreation ──────────────────────────────────────────────────
+
+
+class TestHailoVDeviceCreation:
+    """
+    Verifies that shared VDevice creation is gated on hailo_enabled, not on
+    detection_mode. Before Branch 1, the VDevice was created only when
+    detection_mode == "yolo", which meant fixed_crop runs couldn't share a
+    VDevice with the classifier. After Branch 1, the VDevice follows the
+    Hailo availability flag directly.
+
+    These tests pass regardless of whether Hailo hardware is present because
+    the conditional in __init__ checks hailo_enabled *before* attempting
+    VDevice creation. If Hailo is not installed, the create call inside
+    the try/except fails gracefully and _shared_vdevice stays None.
+    """
+
+    def test_no_vdevice_when_hailo_disabled(self, tmp_path: Path) -> None:
+        """When hailo_enabled=False, _shared_vdevice must be None regardless of detection_mode."""
+        vc = _make_capture(tmp_path, hailo_enabled=False, detection_mode="fixed_crop")
+        assert vc._shared_vdevice is None
+
+    def test_no_vdevice_when_hailo_disabled_even_in_yolo_mode(self, tmp_path: Path) -> None:
+        """Old code created VDevice in yolo mode regardless of enable flag — verify fix."""
+        vc = _make_capture(tmp_path, hailo_enabled=False, detection_mode="yolo")
+        assert vc._shared_vdevice is None
+
+    def test_hailo_enabled_stored(self, tmp_path: Path) -> None:
+        """hailo_enabled parameter is stored on the instance for later inspection."""
+        vc = _make_capture(tmp_path, hailo_enabled=True)
+        assert vc.hailo_enabled is True
+
+    def test_hailo_disabled_default(self, tmp_path: Path) -> None:
+        """Default for hailo_enabled is False — safe default for dev environments."""
+        vc = _make_capture(tmp_path)
+        assert vc.hailo_enabled is False
+
+    def test_from_config_reads_hailo_enabled(self) -> None:
+        """from_config reads hardware.yaml:hailo.enabled and propagates to __init__."""
+        vc = VisionCapture.from_config("configs/")
+        # Current Pi config has hailo.enabled: true, but on dev laptops it's typically false.
+        # Either is valid — just verify the attribute exists and is a bool.
+        assert isinstance(vc.hailo_enabled, bool)
 
 
 # ── TestSaveFrame ─────────────────────────────────────────────────────────────
@@ -395,3 +440,301 @@ class TestCaptureResult:
             motion_score=0.07,
         )
         assert result.image_path is None
+
+    def test_default_gate_passed_is_true(self) -> None:
+        """Backward compatibility: CaptureResult without gate_passed arg defaults to True."""
+        result = CaptureResult(
+            frame=np.zeros((_CLASS_H, _CLASS_W, 3), dtype=np.float32),
+            raw_frame=np.zeros((_CAPTURE_H, _CAPTURE_W, 3), dtype=np.uint8),
+            camera_index=0,
+            image_path=None,
+            motion_score=0.1,
+        )
+        assert result.gate_passed is True
+
+    def test_gate_passed_false_with_reason(self) -> None:
+        """Gate-suppressed CaptureResult has frame=None and gate_reason set."""
+        from src.data.schema import GATE_REASON_NO_BIRD_DETECTED
+
+        result = CaptureResult(
+            frame=None,
+            raw_frame=np.zeros((_CAPTURE_H, _CAPTURE_W, 3), dtype=np.uint8),
+            camera_index=0,
+            image_path=None,
+            motion_score=0.1,
+            gate_passed=False,
+            gate_reason=GATE_REASON_NO_BIRD_DETECTED,
+        )
+        assert result.frame is None
+        assert result.gate_passed is False
+        assert result.gate_reason == GATE_REASON_NO_BIRD_DETECTED
+
+
+# ── TestProcessFrameGate ──────────────────────────────────────────────────────
+
+
+class TestProcessFrameGate:
+    """
+    Tests for the bird-presence gate integration in _process_frame.
+    The gate is an injected BirdDetector (mocked here). These tests verify:
+      - Gate is invoked on motion-triggered frames
+      - gate_passed=False when detector returns None
+      - gate_passed=True when detector returns a BirdDetection
+      - Gate errors don't break the cycle (treated as gate-passed)
+      - No gate (None) preserves pre-Branch-2 behavior
+    """
+
+    def _make_mock_detector(self, detection=None, raise_exc=None) -> MagicMock:
+        """
+        Build a mock BirdDetector. Pass detection=<BirdDetection> to simulate
+        a bird found, detection=None for no-bird, raise_exc=<Exception> to
+        simulate detector failure.
+        """
+        mock = MagicMock()
+        """
+        Build a mock BirdDetector. Pass detection=<BirdDetection> to simulate
+        a bird found, detection=None for no-bird, raise_exc=<Exception> to
+        simulate detector failure.
+        """
+        from unittest.mock import MagicMock as MM
+
+        mock = MM()
+        mock.is_open = False
+
+        def open_side_effect():
+            mock.is_open = True
+
+        mock.open.side_effect = open_side_effect
+
+        if raise_exc is not None:
+            mock.detect.side_effect = raise_exc
+        else:
+            mock.detect.return_value = detection
+
+        return mock
+
+    def test_no_gate_detector_preserves_legacy_behavior(self, tmp_path: Path) -> None:
+        """When gate_detector is None, every motion-triggered frame produces a classifier-ready CaptureResult."""
+        vc = _make_capture(tmp_path, gate_detector=None)
+        result = vc._process_frame(_raw_frame(), camera_index=0)
+        assert result is not None
+        assert result.gate_passed is True
+        assert result.frame is not None
+
+    def test_gate_returns_none_blocks_classification(self, tmp_path: Path) -> None:
+        """When detector returns None, CaptureResult has gate_passed=False and frame=None."""
+        from src.data.schema import GATE_REASON_NO_BIRD_DETECTED
+
+        detector = self._make_mock_detector(detection=None)
+        vc = _make_capture(tmp_path, gate_detector=detector)
+        result = vc._process_frame(_raw_frame(), camera_index=0)
+
+        assert result is not None
+        assert result.gate_passed is False
+        assert result.frame is None
+        assert result.gate_reason == GATE_REASON_NO_BIRD_DETECTED
+        detector.detect.assert_called_once()
+
+    def test_gate_returns_detection_passes_through(self, tmp_path: Path) -> None:
+        """When detector returns a bird, CaptureResult has gate_passed=True and frame populated."""
+        from src.vision.detector import BirdDetection
+
+        detection = BirdDetection(x1=100, y1=100, x2=300, y2=300, confidence=0.85)
+        detector = self._make_mock_detector(detection=detection)
+        vc = _make_capture(tmp_path, gate_detector=detector)
+        result = vc._process_frame(_raw_frame(), camera_index=0)
+
+        assert result is not None
+        assert result.gate_passed is True
+        assert result.frame is not None
+        assert result.gate_confidence == pytest.approx(0.85)
+
+    def test_gate_error_continues_as_gate_passed(self, tmp_path: Path) -> None:
+        """If the detector raises, we conservatively treat the frame as gate-passed."""
+        detector = self._make_mock_detector(raise_exc=RuntimeError("detector broken"))
+        vc = _make_capture(tmp_path, gate_detector=detector)
+        result = vc._process_frame(_raw_frame(), camera_index=0)
+
+        assert result is not None
+        # Conservative default: on detector error, don't lose potential real birds.
+        assert result.gate_passed is True
+        assert result.frame is not None
+
+    def test_gate_opened_on_first_use(self, tmp_path: Path) -> None:
+        """Detector's open() is called lazily on first _process_frame."""
+        detector = self._make_mock_detector(detection=None)
+        vc = _make_capture(tmp_path, gate_detector=detector)
+        vc._process_frame(_raw_frame(), camera_index=0)
+        detector.open.assert_called_once()
+
+    def test_can_construct_directly(self, tmp_path: Path) -> None:
+        result = CaptureResult(
+            frame=np.zeros((_CLASS_H, _CLASS_W, 3), dtype=np.float32),
+            raw_frame=np.zeros((_CAPTURE_H, _CAPTURE_W, 3), dtype=np.uint8),
+            camera_index=0,
+            image_path=tmp_path / "frame.png",
+            motion_score=0.12,
+        )
+        assert result.camera_index == 0
+        assert result.motion_score == pytest.approx(0.12)
+
+    def test_image_path_can_be_none(self) -> None:
+        result = CaptureResult(
+            frame=np.zeros((_CLASS_H, _CLASS_W, 3), dtype=np.float32),
+            raw_frame=np.zeros((_CAPTURE_H, _CAPTURE_W, 3), dtype=np.uint8),
+            camera_index=1,
+            image_path=None,
+            motion_score=0.07,
+        )
+        assert result.image_path is None
+
+
+class TestAdaptiveYoloCrop:
+    """
+    Tests for the adaptive yolo crop logic in VisionCapture.
+
+    The adaptive crop chooses between two strategies based on bbox size:
+        - Large bbox: tight YOLO crop with padding (original behavior)
+        - Small bbox: centered square of min size (new behavior)
+    """
+
+    def _make_capture(self, **overrides):
+        """Build a minimal VisionCapture for testing (no cameras opened)."""
+        defaults = dict(
+            primary_index=0,
+            secondary_index=1,
+            capture_width=1536,
+            capture_height=864,
+            capture_fps=120,
+            classification_width=224,
+            classification_height=224,
+            crop_x=630,
+            crop_y=130,
+            crop_width=700,
+            crop_height=580,
+            motion_threshold=0.005,
+            background_history=10,
+            output_dir="/tmp/avis-test",
+            detection_mode="yolo",
+            hailo_enabled=False,  # do not create Hailo VDevice
+            hailo_yolo_hef=None,
+            yolo_score_threshold=0.3,
+            yolo_max_proposals=50,
+            yolo_min_bird_confidence=0.15,
+            yolo_crop_padding=20,
+            adaptive_min_bbox_dim=250,
+            adaptive_centered_size=300,
+        )
+        defaults.update(overrides)
+        return VisionCapture(**defaults)
+
+    def _make_detection(self, x1, y1, x2, y2, confidence=0.9):
+        """Build a BirdDetection at the given bbox."""
+        from src.vision.detector import BirdDetection
+
+        return BirdDetection(
+            x1=x1,
+            y1=y1,
+            x2=x2,
+            y2=y2,
+            confidence=confidence,
+        )
+
+    def test_large_bbox_uses_tight_crop(self):
+        """When bbox is larger than adaptive_min_bbox_dim on both axes,
+        the tight YOLO crop path is used (standard bbox + padding).
+        """
+        capture = self._make_capture()
+        frame = np.random.randint(0, 255, (864, 1536, 3), dtype=np.uint8)
+        # Large bbox: 400x350
+        det = self._make_detection(500, 300, 900, 650)
+
+        crop = capture._adaptive_yolo_crop(frame, det)
+
+        # With 20px padding, expect ~440 x ~390 crop
+        assert crop.shape[0] >= 350
+        assert crop.shape[0] <= 400
+        assert crop.shape[1] >= 400
+        assert crop.shape[1] <= 450
+        # Content should be the bbox region, not the full frame
+        assert crop.shape[0] < frame.shape[0]
+        assert crop.shape[1] < frame.shape[1]
+
+    def test_small_bbox_uses_centered_square(self):
+        """When bbox is smaller than adaptive_min_bbox_dim on either axis,
+        expand to centered square of adaptive_centered_size.
+        """
+        capture = self._make_capture()
+        frame = np.random.randint(0, 255, (864, 1536, 3), dtype=np.uint8)
+        # Small bbox: 150x120, centroid at (775, 432)
+        det = self._make_detection(700, 372, 850, 492)
+
+        crop = capture._adaptive_yolo_crop(frame, det)
+
+        # Should be exactly 300x300 (or close to it, clipped if near edge)
+        assert crop.shape[0] == 300
+        assert crop.shape[1] == 300
+
+    def test_small_bbox_near_top_edge_shifts_window(self):
+        """A small bbox near the image edge produces a 300x300 window
+        shifted to stay within image bounds.
+        """
+        capture = self._make_capture()
+        frame = np.random.randint(0, 255, (864, 1536, 3), dtype=np.uint8)
+        # Small bbox centered at y=20 (top edge) — window can't center there
+        det = self._make_detection(100, 5, 200, 40)
+
+        crop = capture._adaptive_yolo_crop(frame, det)
+
+        # Window should clip at image top, start at y=0
+        assert crop.shape[0] == 300  # Still 300 tall
+        assert crop.shape[1] == 300  # Still 300 wide
+
+    def test_small_bbox_near_corner_clips_both_axes(self):
+        """A small bbox in the corner produces a smaller clipped window."""
+        capture = self._make_capture()
+        frame = np.random.randint(0, 255, (400, 400, 3), dtype=np.uint8)
+        # Small bbox centered at (10, 10) — very close to top-left corner
+        det = self._make_detection(0, 0, 30, 30)
+
+        crop = capture._adaptive_yolo_crop(frame, det)
+
+        # Window starts at (0, 0), size up to 300, clipped by image
+        # Image is 400x400 so there's room for 300x300 starting at (0, 0)
+        assert crop.shape[0] == 300
+        assert crop.shape[1] == 300
+
+    def test_asymmetric_bbox_large_one_dim_small_other(self):
+        """If only one dimension is below threshold, we take the centered
+        square path (any small dim triggers expansion).
+        """
+        capture = self._make_capture()
+        frame = np.random.randint(0, 255, (864, 1536, 3), dtype=np.uint8)
+        # Wide but short bbox: 400x100 (very common for flying birds)
+        det = self._make_detection(500, 400, 900, 500)
+
+        crop = capture._adaptive_yolo_crop(frame, det)
+
+        # Expect 300x300 centered square (height was too small)
+        assert crop.shape[0] == 300
+        assert crop.shape[1] == 300
+
+    def test_custom_adaptive_params(self):
+        """Adaptive params should be configurable per VisionCapture."""
+        capture = self._make_capture(
+            adaptive_min_bbox_dim=150,
+            adaptive_centered_size=400,
+        )
+        frame = np.random.randint(0, 255, (1500, 1500, 3), dtype=np.uint8)
+        # bbox 200x200 — above 150 threshold, so tight crop
+        det = self._make_detection(500, 500, 700, 700)
+
+        crop = capture._adaptive_yolo_crop(frame, det)
+        assert crop.shape[0] <= 240 + 1  # 200 + 2*20 padding
+        assert crop.shape[1] <= 240 + 1
+
+        # Now a bbox smaller than custom threshold
+        det_small = self._make_detection(500, 500, 600, 600)  # 100x100 < 150
+        crop_small = capture._adaptive_yolo_crop(frame, det_small)
+        assert crop_small.shape[0] == 400
+        assert crop_small.shape[1] == 400

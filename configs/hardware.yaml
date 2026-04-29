@@ -15,8 +15,19 @@
  
 # ── Microphone ────────────────────────────────────────────────────────────────
 microphone:
-  # sounddevice device index — confirmed via sd.query_devices() on Pi
-  device_index: 1
+  # Preferred device lookup method: substring match against sounddevice
+  # device names. Robust to USB enumeration order changes across reboots.
+  # Set this to a distinctive fragment of the device name (verify on Pi
+  # with: python -c "import sounddevice; print(sounddevice.query_devices())").
+  # Leave unset (or empty string) to use device_index directly.
+  device_name: "USB PnP Audio Device"
+
+  # Fallback sounddevice device index used if device_name is unset or does
+  # not match any connected device. sounddevice enumeration is not stable
+  # across reboots — rely on device_name above for deployed hardware.
+  # Confirmed index 0 on the deployed Pi when the Fifine is the only audio
+  # device present. Different indices may be correct on other machines.
+  device_index: 0
  
   # Native sample rate reported by the device — no resampling needed
   # BirdNET expects 48000 Hz — this matches exactly
@@ -43,11 +54,15 @@ cameras:
   secondary_index: 1
  
   # Native capture resolution and framerate.
-  # 1536x864 @ 120fps is the highest-framerate mode on IMX708.
-  # Chosen for responsiveness — fast-moving birds are captured cleanly.
-  capture_width: 1536
-  capture_height: 864
-  capture_fps: 120
+  # 2304x1296 @ 30fps is the IMX708 "binned" mode — 2.25x more pixels per
+  # frame than 1536x864, with longer per-frame exposure for lower noise.
+  # 30 fps is still 30x faster than our 1s orchestration cycle, so the fps
+  # reduction has no practical effect on responsiveness.
+  # Upgraded 2026-04-23 (Branch feat/camera-quality-2x). See
+  # docs/camera-quality-2026-04-23.md for the investigation and rationale.
+  capture_width: 2304
+  capture_height: 1296
+  capture_fps: 30
  
   # EfficientNet-B0 classification input resolution.
   # Frames are cropped to feeder_crop then downsampled to this size.
@@ -79,10 +94,34 @@ cameras:
   #   3. Set x/y so the crop is centered on the perch
   # Default values assume centered feeder perch — adjust after mounting.
   feeder_crop:
-    x: 568        # left edge of crop region (pixels from left of frame)
-    y: 232        # top edge of crop region (pixels from top of frame)
-    width: 400    # crop width in pixels (400px → downsampled to 224px)
-    height: 400   # crop height in pixels
+    # Scaled 1.5x from prior 1536x864 coords to match the new 2304x1296
+    # capture resolution. Real-world framing identical — same feeder area
+    # covered, just more pixels sampling it.
+    x: 852        # left edge of crop region (pixels from left of frame)
+    y: 348        # top edge of crop region (pixels from top of frame)
+    width: 600    # crop width in pixels (600px → downsampled to 224px)
+    height: 600   # crop height in pixels
+
+
+  # ── Per-camera crop overrides (optional) ──────────────────────────────────
+  # If present, these override feeder_crop for the respective camera.
+  # Useful when cameras are mounted at slightly different angles.
+  # If absent, both cameras use the shared feeder_crop values above.
+  # Per-camera feeder crops — scaled 1.5x from prior 1536x864 coords.
+  # These are committed defaults; Pi-local values may override via
+  # scripts/dev_config.py.
+  # feeder_crop_cam0:
+  #   x: 945
+  #   y: 195
+  #   width: 1050
+  #   height: 870
+  # feeder_crop_cam1:
+  #   x: 630
+  #   y: 195
+  #   width: 1050
+  #   height: 870
+
+
  
   # ── Motion detection ──────────────────────────────────────────────────────
   # Minimum mean absolute pixel difference from background model to trigger
@@ -121,6 +160,61 @@ hailo:
   enabled: false
 
   detection_mode: "fixed_crop" # "fixed_crop" or "yolo" - set "yolo" locally on Pi
+
+  # Adaptive crop parameters (only used when detection_mode = "yolo")
+  # When the YOLO bbox dimension is smaller than adaptive_min_bbox_dim on
+  # either axis, the classifier input is expanded to a centered square of
+  # adaptive_centered_size × adaptive_centered_size pixels. Large bboxes
+  # (both dims >= adaptive_min_bbox_dim) use the tight YOLO crop directly.
+  #
+  # These values are tuned for a feeder camera setup where small birds
+  # (finches, sparrows) produce bboxes ~120-200 px and large birds (crows,
+  # doves) produce bboxes ~300+ px. The 300 px centered square gives the
+  # classifier enough environment context to match NABirds training
+  # distribution.
+  adaptive_min_bbox_dim: 250
+  adaptive_centered_size: 300
+
+
+# ── Bird-presence detector configuration (Branch 2, Phase 8) ─────────────────
+# Controls the gate that runs between motion detection and species
+# classification. On motion-triggered frames, the detector asks "is there
+# a bird in this frame?" — if no, the classifier is skipped and a
+# gate_reason="no_bird_detected" observation is logged.
+#
+# This is the primary Phase 8 fix for empty-feeder noise dispatch. See
+# docs/investigations/hailo-2026-04-22.md for the full investigation.
+detector:
+  # Which backend to use for bird-presence detection.
+  #   "cpu"   — ultralytics YOLOv8s on CPU (default, available now).
+  #             ~1000ms inference on Pi 5, acceptable given 8s cycle interval.
+  #   "hailo" — Hailo NPU inference. Deferred to Branch 5 (post-report).
+  #             Raises NotImplementedError if selected today.
+  backend: "cpu"
+
+  # CPU backend settings (used when backend: "cpu")
+  cpu:
+    # Path or name passed to ultralytics.YOLO(). "yolov8s.pt" is resolved
+    # by ultralytics to its default download location (~22MB download on
+    # first use). Pin to a local path for reproducibility if needed.
+    model_path: "yolov8s.pt"
+    # Minimum YOLO confidence to accept a bird detection. 0.25 is a
+    # reasonable default for backyard birds. Raise to reduce false
+    # positives (but risk missing small/distant birds). Lower to catch
+    # more birds (but accept more noise).
+    confidence_threshold: 0.25
+    # YOLO input image size. 640 is the YOLOv8s canonical training size.
+    imgsz: 640
+
+  # Hailo backend settings (deferred to Branch 5 — not yet consumed)
+  hailo:
+    hef_path: "models/detector/yolov8s_bird.hef"  # custom HEF, future work
+    score_threshold: 0.25
+
+
+
+
+
 
 
 

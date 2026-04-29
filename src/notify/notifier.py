@@ -181,6 +181,10 @@ class Notifier:
         webhook_auth_header: str = "",
         push_attach_image: bool = True,
         push_max_attachment_bytes: int = 2_500_000,
+        push_base_timeout_seconds: float = 10.0,
+        push_per_kb_timeout_seconds: float = 0.1,
+        push_max_attempts: int = 3,
+        push_retry_backoff_seconds: float = 2.0,
     ) -> None:
         """
         Args:
@@ -209,6 +213,26 @@ class Notifier:
                                          attachments. Files exceeding this are
                                          skipped and the notification is sent
                                          text-only. Pushover hard limit is 2,621,440.
+            push_base_timeout_seconds:   Minimum timeout for any Pushover POST,
+                                         regardless of payload size. Scales up
+                                         from here with per_kb_timeout_seconds.
+                                         Default 10.0s is enough for the round
+                                         trip on any reasonable network.
+            push_per_kb_timeout_seconds: Additional timeout budget per KB of
+                                         request payload. Default 0.1s/KB
+                                         handles upload speeds as low as
+                                         ~10KB/s (typical for marginal WiFi
+                                         at -70 dBm). A 500KB image gets
+                                         60s total timeout; a 1KB text gets ~10s.
+            push_max_attempts:           Total attempts to send a push including
+                                         the first try. Default 3. Retries only
+                                         on network errors (timeout, connection
+                                         refused); API rejections are not retried.
+            push_retry_backoff_seconds:  Base delay between retry attempts.
+                                         Exponential backoff is applied:
+                                         1st retry = backoff, 2nd = backoff*2,
+                                         3rd = backoff*4. Default 2.0s gives
+                                         2s/4s/8s spacing across 3 retries.
         """
         self.log_path = Path(log_path)
         self.enable_print = enable_print
@@ -221,6 +245,10 @@ class Notifier:
         self.webhook_auth_header = webhook_auth_header
         self.push_attach_image = push_attach_image
         self.push_max_attachment_bytes = push_max_attachment_bytes
+        self.push_base_timeout_seconds = push_base_timeout_seconds
+        self.push_per_kb_timeout_seconds = push_per_kb_timeout_seconds
+        self.push_max_attempts = push_max_attempts
+        self.push_retry_backoff_seconds = push_retry_backoff_seconds
         self.push_enabled = enable_push
 
     @classmethod
@@ -277,6 +305,8 @@ class Notifier:
             push_cfg.get("attach_image", True),
         )
 
+        network_cfg = push_cfg.get("network", {})
+
         return cls(
             log_path=log_path,
             enable_print=channels.get("print", True),
@@ -289,6 +319,10 @@ class Notifier:
             webhook_auth_header=webhook_cfg.get("auth_header", ""),
             push_attach_image=push_cfg.get("attach_image", True),
             push_max_attachment_bytes=int(push_cfg.get("max_attachment_bytes", 2_500_000)),
+            push_base_timeout_seconds=float(network_cfg.get("base_timeout_seconds", 10.0)),
+            push_per_kb_timeout_seconds=float(network_cfg.get("per_kb_timeout_seconds", 0.1)),
+            push_max_attempts=int(network_cfg.get("max_attempts", 3)),
+            push_retry_backoff_seconds=float(network_cfg.get("retry_backoff_seconds", 2.0)),
         )
 
     def dispatch(self, observation: BirdObservation) -> None:
@@ -302,6 +336,10 @@ class Notifier:
         Args:
             observation: A confirmed BirdObservation from the fusion module.
         """
+        # Mark dispatched=True explicitly so the logged record reflects reality.
+        # model_copy preserves immutability of the original observation for callers.
+        observation = observation.model_copy(update={"dispatched": True})
+
         # Log is always first — guaranteed local persistence
         self._log(observation)
 
@@ -316,6 +354,47 @@ class Notifier:
 
         if self.enable_email:
             self._email(observation)
+
+    def log_suppressed(self, observation: BirdObservation) -> None:
+        """
+        Log an observation that was classified but not dispatched to users.
+
+        Used by the agent when an observation is suppressed by the confidence
+        threshold or cooldown gate. Without this method, below-threshold and
+        cooldown-suppressed observations would be silently discarded, leaving
+        no record that the system classified anything at all.
+
+        Background on the orphan-observation problem this addresses:
+            During April 20 deployment, 5186 of 5624 captured frames (92%)
+            had no corresponding observation log entry. The frames were
+            captured, classified, and scored by the fusion module, but the
+            observation object was garbage-collected inside _cycle() when
+            either the confidence threshold or cooldown gate returned early.
+            This made it impossible to analyze the visual classifier's
+            actual behavior on real bird events that were simply below the
+            user-notification threshold. The full classification stream is
+            valuable for evaluation, threshold tuning, and model improvement
+            even when the individual events are not worth notifying users
+            about.
+
+        This method writes to the same observations.jsonl as dispatch() but
+        marks the observation with dispatched=False. Downstream consumers
+        can filter on the dispatched field to preserve existing "notifications
+        sent" semantics where needed — the observation_tools.py LLM agent
+        functions remain backwards compatible when they filter
+        dispatched=True.
+
+        No user-facing side effects: no push, no webhook, no email, no print.
+        Only the JSONL log is written.
+
+        Args:
+            observation: BirdObservation to log. Will be marked dispatched=False
+                         before writing.
+        """
+        # model_copy preserves immutability — the agent's copy of the
+        # observation object is unchanged by this call.
+        observation = observation.model_copy(update={"dispatched": False})
+        self._log(observation)
 
     # ── Channel implementations ───────────────────────────────────────────────
 
@@ -481,37 +560,129 @@ class Notifier:
                     logger.error("Push attachment: failed to read image file — %s", exc)
 
         # ── POST to Pushover API ──────────────────────────────────────────
-        try:
-            if attachment_bytes is not None:
-                data, content_type = _build_multipart(
-                    payload, attachment_bytes, attachment_filename, attachment_mime
-                )
-            else:
-                data = urllib.parse.urlencode(payload).encode("utf-8")
-                content_type = "application/x-www-form-urlencoded"
-
-            req = urllib.request.Request(
-                "https://api.pushover.net/1/messages.json",
-                data=data,
-                headers={"Content-Type": content_type},
-                method="POST",
+        if attachment_bytes is not None:
+            data, content_type = _build_multipart(
+                payload, attachment_bytes, attachment_filename, attachment_mime
             )
-            with urllib.request.urlopen(req, timeout=5) as response:
-                body = response.read().decode("utf-8")
-                status = json.loads(body).get("status", 0)
-                if status == 1:
-                    attached = "with image" if attachment_bytes else "text-only"
-                    logger.info(
-                        "Push sent (%s): %s (%.0f%%)",
-                        attached,
-                        observation.species_code,
-                        observation.fused_confidence * 100,
-                    )
-                else:
-                    logger.warning("Pushover API returned status=%s body=%s", status, body)
+            context = (
+                f"{observation.species_code} " f"({observation.fused_confidence:.0%}) with image"
+            )
+        else:
+            data = urllib.parse.urlencode(payload).encode("utf-8")
+            content_type = "application/x-www-form-urlencoded"
+            context = (
+                f"{observation.species_code} " f"({observation.fused_confidence:.0%}) text-only"
+            )
 
-        except Exception as exc:
-            logger.error("Pushover push failed: %s", exc)
+        self._post_to_pushover(data, content_type, context=context)
+
+    def _post_to_pushover(
+        self,
+        data: bytes,
+        content_type: str,
+        *,
+        context: str,
+    ) -> bool:
+        """
+        POST to the Pushover API with payload-scaled timeout and retry logic.
+
+        Shared implementation for both image-attached (_push) and text-only
+        (_push_text) notifications. Handles transient network failures common on
+        edge deployments (weak WiFi, marginal cellular, variable residential
+        broadband) by retrying with exponential backoff.
+
+        Timeout calculation:
+            Base + (payload_size_kb * per_kb_multiplier)
+            Default: 10s base + 0.1s/KB → a 500KB image gets 60s;
+                                           a 1KB text message gets ~10s.
+            This handles upload speeds as low as ~10 KB/s, which is typical for
+            marginal WiFi at -70 dBm or weak cellular connections.
+
+        Retry strategy:
+            - Retries on urllib.error.URLError and socket.timeout (network issues)
+            - Does NOT retry on status != 1 Pushover responses (API-level rejection
+              will not succeed on retry — likely invalid credentials or rate limit)
+            - Exponential backoff between retries: backoff * (2 ** (attempt - 1))
+            - Default: 3 attempts with 2s, 4s, 8s spacing
+
+        Args:
+            data:         Pre-encoded request body bytes.
+            content_type: Value for the Content-Type header.
+            context:      Short description for log messages (e.g.
+                          "HOFI push with image", "daily summary text push").
+
+        Returns:
+            True if the push succeeded (either first try or after retry).
+            False if all attempts failed or the API rejected the push.
+        """
+        import time
+        import urllib.error
+        import urllib.request
+
+        payload_kb = len(data) / 1024.0
+        timeout_seconds = self.push_base_timeout_seconds + (
+            payload_kb * self.push_per_kb_timeout_seconds
+        )
+
+        req = urllib.request.Request(
+            "https://api.pushover.net/1/messages.json",
+            data=data,
+            headers={"Content-Type": content_type},
+            method="POST",
+        )
+
+        for attempt in range(1, self.push_max_attempts + 1):
+            try:
+                with urllib.request.urlopen(req, timeout=timeout_seconds) as response:
+                    body = response.read().decode("utf-8")
+                    status = json.loads(body).get("status", 0)
+                    if status == 1:
+                        retry_note = (
+                            f" (succeeded on attempt {attempt}/{self.push_max_attempts})"
+                            if attempt > 1
+                            else ""
+                        )
+                        logger.info(
+                            "Pushover push sent: %s | %.1fKB, timeout=%.1fs%s",
+                            context,
+                            payload_kb,
+                            timeout_seconds,
+                            retry_note,
+                        )
+                        return True
+                    else:
+                        # API-level rejection — don't retry, these don't recover
+                        logger.warning(
+                            "Pushover API rejected push: %s | status=%s body=%s",
+                            context,
+                            status,
+                            body,
+                        )
+                        return False
+
+            except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                # OSError is the parent of URLError and covers bare socket errors
+                # on some platforms (e.g. ECONNRESET, EPIPE). All are transient.
+                if attempt < self.push_max_attempts:
+                    backoff = self.push_retry_backoff_seconds * (2 ** (attempt - 1))
+                    logger.warning(
+                        "Pushover push network error (attempt %d/%d): %s | %s | retrying in %.1fs",
+                        attempt,
+                        self.push_max_attempts,
+                        context,
+                        exc,
+                        backoff,
+                    )
+                    time.sleep(backoff)
+                else:
+                    logger.error(
+                        "Pushover push failed after %d attempts: %s | last error: %s",
+                        self.push_max_attempts,
+                        context,
+                        exc,
+                    )
+
+        return False
 
     def _push_text(self, message: str) -> None:  # noqa: ANN001
         """
@@ -557,23 +728,11 @@ class Notifier:
             }
         ).encode()
 
-        try:
-            req = urllib.request.Request(
-                "https://api.pushover.net/1/messages.json",
-                data=payload,
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                import json as _json
-                import logging
-
-                body = _json.loads(resp.read())
-                if body.get("status") != 1:
-                    logging.getLogger(__name__).warning("Pushover returned status != 1: %s", body)
-        except Exception as exc:  # noqa: BLE001
-            import logging
-
-            logging.getLogger(__name__).warning("_push_text failed: %s", exc)
+        self._post_to_pushover(
+            payload,
+            "application/x-www-form-urlencoded",
+            context="system text push",
+        )
 
     def _webhook(self, observation: BirdObservation) -> None:
         """

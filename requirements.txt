@@ -45,6 +45,13 @@ python-dotenv==1.0.1       # Load .env file into os.environ
 # hailort                   # Installed via Hailo's own installer, not pip
 
 
+# ── CPU YOLO for bird-presence gate (Phase 8, Branch 2) ──────────────────────
+# Runs YOLOv8s on CPU to decide whether motion-triggered frames contain a bird
+# before invoking the species classifier. See src/vision/detector.py and
+# docs/investigations/hailo-2026-04-22.md for the rationale (stock Hailo YOLO
+# HEF does not produce usable detections; custom-compiled HEF deferred to
+# Branch 5).
+ultralytics>=8.4.0,<9.0.0
 
 
 # Phase 6+ — Agentic LLM layer
@@ -52,3 +59,27 @@ langchain-core>=0.3.0,<2.0.0
 langchain-google-genai>=2.0.0,<3.0.0
 langgraph>=1.0.0,<2.0.0
 langchain>=0.3.0,<2.0.0
+
+
+# ─────────────────────────────────────────────────────────────────
+# Layer 2 — labeling-assistant review UI (tools/labeler/ui/)
+# ─────────────────────────────────────────────────────────────────
+# Add these lines to requirements.txt. Versions chosen to match what
+# the Layer 2 test suite was developed against (123 tests passing).
+# If you bump these, re-run: pytest tests/labeler/ui/
+ 
+# FastAPI: web framework for /api routes, page routes, image serving
+fastapi==0.118.0
+ 
+# Uvicorn: ASGI server. The [standard] extra adds httptools + uvloop
+# for ~30% throughput on Linux (no effect on Windows but harmless).
+uvicorn[standard]==0.32.0
+ 
+# python-multipart: required by FastAPI to parse form data. We don't
+# use forms today but FastAPI will warn at startup if missing.
+python-multipart==0.0.18
+ 
+# httpx: only used by the test suite (TestClient under the hood).
+# Listed here because tests are run from the same venv as the app.
+httpx==0.28.1
+ 

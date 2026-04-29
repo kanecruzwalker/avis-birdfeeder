@@ -58,7 +58,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import yaml
@@ -66,6 +66,16 @@ import yaml
 from src.agent.bird_agent import BirdAgent
 from src.agent.bird_analyst_agent import BirdAnalystAgent  # noqa: F401
 from src.notify.report_builder import ReportBuilder
+
+# Optional sdnotify: systemd watchdog integration. Graceful no-op when not
+# running under systemd (dev/test environments, laptop runs, CI).
+try:
+    import sdnotify  # type: ignore[import-untyped]
+
+    _SDNOTIFY_AVAILABLE = True
+except ImportError:
+    sdnotify = None  # type: ignore[assignment]
+    _SDNOTIFY_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +145,7 @@ class ExperimentOrchestrator:
         self.push_window_summaries = push_window_summaries
         self.daily_summaries_dir = Path(daily_summaries_dir)
         self.analyst = analyst
+        self._last_llm_call = datetime.now(UTC) - timedelta(minutes=self.window_minutes)
 
         self._running = False
 
@@ -212,7 +223,7 @@ class ExperimentOrchestrator:
                 _log.getLogger(__name__).warning("BirdAnalystAgent init failed: %s", exc)
 
         logger.info(
-            "ExperimentOrchestrator.from_config | config_dir=%s " "window=%.0fmin ab_modes=%s",
+            "ExperimentOrchestrator.from_config | config_dir=%s window=%.0fmin ab_modes=%s",
             config_dir,
             window_minutes,
             ab_modes,
@@ -240,10 +251,15 @@ class ExperimentOrchestrator:
             1. Set initial detection mode on VisionCapture
             2. Wait startup_delay_seconds for background model to warm up
             3. Push "Avis is live" notification
-            4. Enter main loop (calls _run_cycle() on each BirdAgent tick)
+            4. Arm systemd watchdog (if available)
+            5. Enter main loop (calls _run_cycle() on each BirdAgent tick,
+               emitting a watchdog heartbeat after each cycle)
 
         The loop runs until KeyboardInterrupt or stop() is called.
         Cleans up via BirdAgent (which calls VisionCapture.stop()) on exit.
+
+        Watchdog deployment requires a systemd unit override on the Pi.
+        See docs/deployment.md → "Systemd watchdog" for setup and verification.
         """
         self._running = True
         self._boot_time = datetime.now(UTC)
@@ -266,16 +282,37 @@ class ExperimentOrchestrator:
         # "Avis is live" push — first human-visible signal after boot
         self._push_startup_notification(initial_mode)
 
+        # ── Systemd watchdog ──────────────────────────────────────────────────
+        # READY=1 notifies systemd the service is fully up. WATCHDOG=1 is
+        # emitted after each cycle as a heartbeat. If heartbeats stop for
+        # longer than WatchdogSec (set in systemd unit override), systemd
+        # restarts the service. Protects against silent deadlocks and hangs
+        # on blocking network calls (Pushover, Gemini).
+        systemd_notifier = sdnotify.SystemdNotifier() if _SDNOTIFY_AVAILABLE else None
+        if systemd_notifier is not None:
+            systemd_notifier.notify("READY=1")
+            logger.info(
+                "Systemd watchdog notifier armed (heartbeat per cycle).",
+            )
+        else:
+            logger.debug(
+                "sdnotify unavailable — running without systemd watchdog.",
+            )
+
         # ── Main loop ─────────────────────────────────────────────────────────
         logger.info("Entering main orchestration loop.")
         try:
             while self._running:
                 self._run_cycle()
+                if systemd_notifier is not None:
+                    systemd_notifier.notify("WATCHDOG=1")
                 time.sleep(self.agent.loop_interval_seconds)
         except KeyboardInterrupt:
             logger.info("ExperimentOrchestrator interrupted by user.")
         finally:
             self._running = False
+            if systemd_notifier is not None:
+                systemd_notifier.notify("STOPPING=1")
             # BirdAgent.run() normally handles cleanup, but since we're
             # calling _cycle() directly we clean up here instead.
             if self.agent.vision_capture is not None:
@@ -293,68 +330,67 @@ class ExperimentOrchestrator:
         """
         One orchestration tick.
 
-        LLM path (when analyst.llm_available):
-            Call analyst.advise() → execute AnalystDecision returned.
-            The LLM decides whether to switch modes, push, or generate a report.
+        Order of operations (revised in fix/orchestrator-rotation-timer):
+            1. Timer-based A/B rotation — fires unconditionally when the
+               window has elapsed. Runs regardless of LLM availability so
+               A/B data is collected on schedule even when the LLM is
+               healthy but never explicitly chooses to switch modes.
+            2. LLM analyst advise() — runs every window_minutes when the
+               LLM is available. The LLM can still call switch_detection_mode
+               via its tool registry, but no longer gatekeeps the timer.
+            3. Daily summary — fires at summary_hour_utc, also independent
+               of LLM availability.
+            4. BirdAgent._cycle() — the perception-decision-action loop runs
+               every tick regardless of the above.
 
-        Fallback path (when LLM unavailable):
-            Original fixed-schedule logic runs unchanged — A/B window timer,
-            daily summary at summary_hour_utc, mode rotation.
-
-        Either path ends with BirdAgent._cycle() running — the feeder detection
-        loop always executes regardless of which decision path ran above it.
+        Pre-fix bug: when LLM was healthy and consistently returned
+        switch_mode=None (its conservative default behavior), the rotation
+        never fired. One deployment session ran 311 minutes in a single
+        mode (~5.2 hours) instead of rotating every 30 minutes, blocking
+        A/B data collection for the master evaluation notebook.
         """
         now = datetime.now(UTC)
 
-        if self.analyst is not None and self.analyst.llm_available:
-            # ── LLM path ──────────────────────────────────────────────────────
-            window_elapsed = (now - self._window_start).total_seconds() / 60
-            uptime = (now - self._boot_time).total_seconds() if hasattr(self, "_boot_time") else 0.0
-
-            decision = self.analyst.advise(
-                vision_capture=self.agent.vision_capture,
-                notifier=self.agent.notifier,
-                current_mode=self.current_detection_mode(),
-                uptime_seconds=uptime,
-                window_elapsed_minutes=window_elapsed,
-                window_total_minutes=self.window_minutes,
-            )
-
-            if decision is not None:
-                # Execute what the agent decided
-                if decision.switch_mode and decision.switch_mode != self.current_detection_mode():
-                    self._apply_detection_mode(decision.switch_mode)
-                    self._window_start = now  # reset window on LLM-driven switch
-
-                if decision.generate_report:
-                    self._fire_daily_summary(now)
-
-                if decision.push_message and decision.push_message != "[pushed by agent]":
-                    # Agent set a message but didn't call push_notification directly
-                    self._push_text(decision.push_message)
-            else:
-                # LLM returned None this cycle — run fallback for this tick
-                self._fallback_cycle(now)
-        else:
-            # ── Fallback path — fixed schedule ────────────────────────────────
-            self._fallback_cycle(now)
-
-        # Agent detection loop always runs regardless of decision path
-        self.agent._cycle()
-
-    def _fallback_cycle(self, now):
-        """
-        Fixed-schedule fallback logic — runs when LLM is unavailable.
-
-        This is the original _run_cycle logic extracted into its own method
-        so the LLM path can call it as a fallback without code duplication.
-        """
+        # ── 1. Timer-based A/B rotation (always) ─────────────────────────
         window_elapsed = (now - self._window_start).total_seconds() / 60
         if window_elapsed >= self.window_minutes and len(self.ab_modes) > 1:
             self._rotate_detection_mode(window_end=now)
 
+        # ── 2. LLM analyst advise (when available) ───────────────────────
+        if self.analyst is not None and self.analyst.llm_available:
+            minutes_since_last_llm = (now - self._last_llm_call).total_seconds() / 60
+            if minutes_since_last_llm >= self.window_minutes:
+                self._last_llm_call = now
+                uptime = (
+                    (now - self._boot_time).total_seconds() if hasattr(self, "_boot_time") else 0.0
+                )
+
+                decision = self.analyst.advise(
+                    vision_capture=self.agent.vision_capture,
+                    notifier=self.agent.notifier,
+                    current_mode=self.current_detection_mode(),
+                    uptime_seconds=uptime,
+                    window_elapsed_minutes=(now - self._window_start).total_seconds() / 60,
+                    window_total_minutes=self.window_minutes,
+                )
+
+                if decision is not None:
+                    # The LLM may call switch_detection_mode through its
+                    # tools, which directly mutates vision_capture.detection_mode.
+                    # The timer-based rotation above is the primary mechanism
+                    # for A/B data collection — the LLM augments rather than
+                    # gates.
+                    if decision.generate_report:
+                        self._fire_daily_summary(now)
+                    if decision.push_message and decision.push_message != "[pushed by agent]":
+                        self._push_text(decision.push_message)
+
+        # ── 3. Daily summary (always) ─────────────────────────────────────
         if self._should_fire_daily_summary(now):
             self._fire_daily_summary(now)
+
+        # ── 4. Run the bird detection cycle ───────────────────────────────
+        self.agent._cycle()
 
     # ── A/B mode management ───────────────────────────────────────────────────
 

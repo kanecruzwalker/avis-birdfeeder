@@ -10,6 +10,733 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+  ### Fixed
+- Orchestrator A/B rotation timer now fires unconditionally on schedule.
+  Previously, when the LLM analyst path was active and the LLM consistently
+  returned `switch_mode=None`, the timer-based rotation never fired, leaving
+  the system stuck in a single mode. Observed 311-minute single-mode window
+  in 2026-04-26 deployment versus the configured 30-minute rotation. Fix
+  moves rotation to the top of `_run_cycle()` where it runs every cycle
+  regardless of LLM availability.
+- Removed duplicate `run()` method body in `ExperimentOrchestrator` left
+  over from a prior merge.
+
+---
+
+### Fixed
+- `VisualClassifier.from_config` no longer assigns `hailo_enabled` as a one-tuple — boolean checks against `hardware.yaml hailo.enabled` now work correctly.
+- `BirdAgent._cycle` now propagates `detection_mode` from `CaptureResult` to `BirdObservation`, fixing field-tag tracking that always reported `fixed_crop`.
+
+---
+
+Phase 8 — Track 3 visual classifier retraining (PR #N feature/track-3-retraining)
+Added
+
+docs/investigations/track-3-retraining-2026-04-25.md — full
+investigation document covering hypothesis, methodology, split
+strategy, ablation plan (V0/V1/V2/V3), success criteria, risks, and
+rollback plan.
+notebooks/phase8_track3_training.py — feature extraction (cached to
+track3_features_cache.npz, gitignored at 34MB) plus training of four
+LogReg head variants. Each variant tunes C ∈ {0.01, 0.1, 1.0, 10.0, 100.0} on the deployment val set with class_weight="balanced". All
+four bundles saved to models/visual/sklearn_pipeline_track3_v{0,1,2,3}.pkl.
+notebooks/phase8_track3_evaluation.py — evaluates each variant on
+both NABirds test (672 records, 19 species) and deployment test
+(642 records, up to 23 classes depending on variant). Produces 8
+confusion matrices, 4 per-class F1 plots, 4 classification reports,
+one comparison_table.csv, and winner.txt + winner_rationale.md.
+notebooks/track3_override_winner.py — one-off operational script.
+Backs up the current production model to
+sklearn_pipeline_v0_backup.pkl, deploys V2 to
+sklearn_pipeline.pkl, writes the V2 selection rationale to
+winner_rationale.md documenting the V1-vs-V2 decision.
+tools/labeler/ui/make_deployment_splits.py — chronological 70/15/15
+splits from verified_labels.jsonl by capture_timestamp.
+Stratification check warns if any class has fewer than 3 records in
+val or test. Produces data/splits/deployment_{train,val,test}.csv.
+notebooks/results/phase8/track3_retraining/ — full evaluation
+artifacts (confusion matrices, per-class F1 plots, classification
+reports, comparison table, winner rationale). Tracked in git.
+models/visual/sklearn_pipeline_track3_v{0,1,2,3}.pkl — all four
+variants tracked (~220KB each, 10 .pkl files total at ~2.4MB).
+Permits exact-numbers reproducibility without re-running training.
+models/visual/sklearn_pipeline_v0_backup.pkl — preserved baseline
+for rollback.
+models/baselines/audio_knn_baseline.pkl — Phase 3 audio baseline
+(110KB) now tracked for reproducibility of the phase 7 evaluation.
+notebooks/classifier_retrain_experiment_2026-04-23.py — earlier
+exploratory script preserved as methodology history.
+configs/species.yaml — added CALT (California Towhee, Melozone
+crissalis) entry under year-round residents.
+
+Changed
+
+models/visual/sklearn_pipeline.pkl — production model now serves V2
+(20 classes, NABirds + deployment HOFI/SOSP/AMCR + CALT). Previous
+baseline preserved at sklearn_pipeline_v0_backup.pkl for rollback.
+Pi agent picks up new model on next git pull + systemctl restart.
+.gitignore — added rules to exclude regenerable large files:
+notebooks/results/**/*_features_cache.npz (34MB feature caches
+produced by the training script, recreated in 30-60 minutes by
+re-running) and models/baselines/visual_svm_baseline.pkl (537MB,
+exceeds GitHub's 100MB limit, regenerable from
+notebooks/visual_baseline.ipynb).
+
+Findings (deployment data)
+
+CALT classification fixed. V0 misclassified 100% of CALT records
+as MOCH or MODO because CALT was not in the visual vocabulary. V2
+correctly classifies 67/70 CALT test records (96% recall, per-class
+F1 = 0.77). Confusion matrix off-diagonal CALT-as-MOCH/MODO drops
+from baseline rate to under 2%.
+Deployment macro F1 improvement. V0: 0.131 → V2: 0.736 (Δ +0.605).
+NABirds preservation. V0 macro F1: 0.931 → V2: 0.921 (within the
+0.05 tolerance threshold, no catastrophic forgetting on the 19
+NABirds species).
+V2 vs V1 selection. V1 had higher raw deploy_macro_f1 (0.776 vs
+V2's 0.736) but was evaluated on only 184 of 642 deployment test
+records (29%) — V1 has no class for CALT/NONE/UNKNOWN and excludes
+those records from its evaluation entirely. V2 was evaluated on 254
+records including CALT and is the larger-scope evaluation. V1 cannot
+classify CALT, so deploying V1 would leave the headline problem
+unfixed. Full reasoning in
+notebooks/results/phase8/track3_retraining/winner_rationale.md.
+UNKNOWN class did not learn. V3 attempted explicit NONE and
+UNKNOWN classes for abstention. NONE worked (per-class F1 = 0.77).
+UNKNOWN failed (F1 = 0.14) — only 84 training records and the
+heterogeneous nature of the class (blur + multi-bird + weird angle)
+prevented coherent representation learning. 33 of 58 UNKNOWN test
+records were predicted as CALT. Recommendation for next iteration
+is to drop UNKNOWN as a class and use threshold-based abstention via
+the existing ScoreFuser logic instead. NONE may be retained as a
+class in a future variant since it works.
+
+Limitations
+
+All 4280 verified records are from a single day (2026-04-24, ~21
+hours of captures). Splits test ~2-hour temporal generalization, not
+multi-day. A more robust evaluation will be possible after additional
+days of deployment data accumulate.
+AMCR test set has only 10 records; per-class F1 numbers for AMCR are
+noisy (a single record difference shifts F1 by 0.1).
+Deployment test set cam-skew is 14.5/85.5 (cam0/cam1) versus train
+27.8/72.2. Slight evaluation bias toward cam1 conditions.
+The evaluation script's automatic decision rule (best deploy_macro_f1
+with NABirds tolerance) is flawed when variants evaluate on different
+test set sizes. A revised rule for future Track-N evaluations would
+require evaluation set size parity (e.g., variants must score on at
+least 95% of the largest variant's eval set to qualify).
+
+Verification
+
+Laptop-side: V2 deployed and verified loading — 20 classes, C=0.1,
+track3_variant=v2, val F1=0.842. VisualClassifier.from_config()
+loads cleanly with the new label map.
+Pi-side: Pending first post-merge git pull and systemctl restart avis-agent. Expected log line: "VisualClassifier loaded | classes=20".
+Rollback path: cp models/visual/sklearn_pipeline_v0_backup.pkl models/visual/sklearn_pipeline.pkl then restart agent. < 5 minutes.
+
+Notes
+
+The track3_features_cache.npz (34MB) is intentionally gitignored —
+it's a deterministic function of the input images and can be
+regenerated by running phase8_track3_training.py (~30-60 min on
+CPU). Tracking it would bloat the repo without aiding reproducibility.
+The models/baselines/visual_svm_baseline.pkl (537MB) is also
+gitignored — exceeds GitHub's per-file limit. The Phase 3 baseline
+remains regenerable from notebooks/visual_baseline.ipynb.
+
+Test count
+
+No new tests in this PR (research-mode notebooks/scripts, not src/
+changes). 123 existing tests still passing across the labeler module.
+Future PR: add the bird-agent-side _label_map length test that
+asserts the 20-class shape of the deployed pipeline.
+
+---
+
+
+### Added
+- **Layer 2 — Labeling assistant review UI** (PR #N)
+  - `tools/labeler/ui/` — token-authenticated FastAPI web UI for verifying
+    Layer 1 pre-labels. Three-view SPA (queue, review, verified) with
+    six-theme system (warm/pollen/mono × light/dark), keyboard shortcuts,
+    touch gestures, and mobile-responsive layout.
+  - `tools/labeler/ui/review_store.py` — in-memory store with atomic JSONL
+    persistence (append on first verify, atomic rewrite on correction).
+    Optimistic concurrency via `client_load_time` round-trip prevents
+    silent overwrites when reviewing from multiple devices.
+  - `tools/labeler/ui/auth.py` — `AVIS_WEB_TOKEN` middleware with
+    `hmac.compare_digest` for timing-attack-resistant comparison. Token
+    accepted via `X-Avis-Token` header or `?token=` query parameter.
+  - `tools/labeler/ui/inspect_verified.py` — diagnostic script: schema
+    validation, per-species distribution, OTHER breakdown, agreement-rate
+    analysis, duplicate/orphan detection.
+  - `tools/labeler/ui/inspect_unreviewed.py` — backlog analysis with
+    agreement-rate cross-reference for bulk-action recommendations.
+  - `tools/labeler/ui/README.md` — setup, daily workflow,
+    NONE/UNKNOWN/OTHER distinctions, results-interpretation guide with
+    worked example from the first reviewer session.
+  - `docs/investigations/labeling-assistant-ui-2026-04-25.md` — full
+    design rationale, architecture, success criteria, risks, rollback.
+  - `tests/labeler/ui/` — 76 new tests (30 store, 15 auth, 31 routes).
+  - 116 total Layer 2 tests passing; 123 across the labeler module.
+
+- **Schema additions** (additive, backward-compatible) (PR #N)
+  - `OTHER` sentinel in `tools/labeler/schema.py` — for confidently-
+    identified out-of-vocabulary species.
+  - `other_species_code` field — 4-letter custom code stored when
+    `species_code == "OTHER"`. Pydantic validators enforce the
+    `OTHER ↔ code` invariant and reject collisions with known codes.
+  - 22 new tests in `tests/labeler/test_schema.py` covering validation,
+    format constraints, and known-code collision detection.
+
+- **Configuration**
+  - `AVIS_WEB_TOKEN` documented in `.env.example`. Server refuses to
+    start without a token of at least 16 characters.
+  - `requirements.txt` — added `fastapi==0.118.0`,
+    `uvicorn[standard]==0.32.0`, `python-multipart==0.0.18`,
+    `httpx==0.28.1` (test client).
+
+### Findings (deployment data)
+- First reviewer pass: 4280 of 8276 captures verified (52% coverage).
+- Visual species observed at the feeder during this period: AMCR
+  (American Crow, 198 records, 100% pre-labeler agreement), SOSP
+  (Song Sparrow, 1014 records, 96.4%), HOFI (House Finch, 284 records,
+  69.9%), CALT (California Towhee, 521 records via OTHER — out-of-
+  vocabulary, no native pre-labeler support).
+- Nine species the pre-labeler proposed (MODO, MOCH, WREN, HOSP, OCWA,
+  AMRO, HOORI, SPTO, EUST) had zero agreement across 535 records;
+  appear to be visual hallucinations on out-of-distribution captures.
+- Implication for Track 3 retraining: target intervention is adding
+  CALT to the visual classifier vocabulary using the 521 reviewer-
+  confirmed examples. Other vocabulary additions are not supported by
+  this deployment data.
+
+### Notes
+- Zero changes to `src/` runtime code — production agent on the Pi is
+  untouched.
+- Bulk-confirm script (`tools/labeler/ui/bulk_confirm.py`) is included
+  but was not run for this dataset; current 4280 records reflect
+  manual review only.
+
+---
+
+### Added
+- Upgraded camera capture from 1536×864 @ 120fps to 2304×1296 @ 30fps
+  (IMX708 binned mode) to provide 2.25× more pixels per bird as input
+  to the classifier. All `feeder_crop` coordinates rescaled 1.5× to
+  preserve the real-world framing at the new pixel grid. Investigation
+  rationale, hypothesis, and success criteria documented in
+  `docs/camera-quality-2026-04-23.md`.
+
+### Changed
+- `configs/hardware.yaml`: `capture_width`/`capture_height`/`capture_fps`
+  and all three `feeder_crop*` blocks updated to the new 2× coordinate
+  system. Real-world feeder framing is preserved.
+- `scripts/dev_config.py`: `PI_OVERRIDES` for `feeder_crop_cam0` and
+  `feeder_crop_cam1` rescaled to match the new capture resolution.
+- `tests/vision/test_capture.py`: module-level capture dimension constants
+  updated to match new defaults. `TestAdaptiveYoloCrop` retained original
+  1536×864 fixture dimensions (tests are resolution-independent math).
+
+---
+
+### Added
+- Systemd watchdog integration for service self-healing. The orchestrator now
+  emits `READY=1`, `WATCHDOG=1` per cycle, and `STOPPING=1` signals via
+  sdnotify. Pairs with a systemd service override (`WatchdogSec=300`,
+  `Restart=always`) to automatically restart the service if it stops
+  heartbeating for 5 minutes. Graceful no-op when sdnotify is unavailable.
+  Added `sdnotify>=0.3.2` to `requirements-pi.txt`. See
+  `docs/deployment.md` → "Systemd watchdog" for Pi setup.
+
+---
+
+### Phase 8 — Bird-Presence Gate (Branch 2)
+
+#### Added
+- `BirdDetector` protocol in `src/vision/detector.py` with `CPUYOLODetector`
+  implementation using ultralytics YOLOv8s on CPU. Runs between motion
+  detection and species classification to filter out empty-feeder frames
+  that previously got classified as noise.
+- `GATE_REASON_*` string constants in `src/data/schema.py` (plain strings
+  rather than StrEnum for maximum backward compatibility with serialized
+  observations).
+- `BirdObservation.gate_reason` field — records why a suppressed observation
+  was suppressed. Values: `no_bird_detected`, `below_confidence_threshold`,
+  `species_cooldown`. `None` when the observation was dispatched or when the
+  record predates Branch 2.
+- `CaptureResult.gate_passed`, `CaptureResult.gate_reason`,
+  `CaptureResult.gate_confidence` fields — communicate gate state from
+  `VisionCapture` to `BirdAgent`. `gate_passed` defaults to `True` for
+  backward compatibility with code paths that don't run the gate.
+- `configs/hardware.yaml: detector.*` block — selects detector backend
+  (`cpu` or `hailo`) and per-backend settings (model path, confidence
+  threshold, imgsz).
+- `BirdAgent._log_gate_suppressed()` helper — synthesizes a sentinel
+  `species_code="NONE"` observation when both cameras' gates block AND
+  no audio detection fills the gap, so gate-blocked motion events are
+  preserved in `observations.jsonl` for ablation analysis.
+
+#### Changed
+- `BirdAgent._cycle()` now checks `gate_passed` per camera before invoking
+  the visual classifier. Pre-existing suppression paths (threshold, cooldown)
+  now also populate `gate_reason` on the logged observation.
+- `VisionCapture._process_frame()` runs the bird-presence gate after the
+  motion gate but before classifier preprocessing. Gate failure produces a
+  `CaptureResult` with `frame=None, gate_passed=False`.
+- `ultralytics>=8.4.0,<9.0.0` added to `requirements.txt` and `requirements-pi.txt`.
+
+#### Context
+- Full investigation and design rationale:
+  `docs/investigations/hailo-2026-04-22.md`.
+- Follow-on branches: `fix/hailo-classifier-normalization` (Branch 3),
+  `refactor/orchestrator-agentic-windows` (Branch 4),
+  `feat/hailo-yolo-compilation` (Branch 5, deferred post-report).
+
+
+
+### Changed
+- `VisionCapture.__init__` now accepts a `hailo_enabled` parameter that controls
+  shared VDevice creation, replacing the previous `detection_mode == "yolo"` gate.
+  This decouples Hailo infrastructure availability from model-level decisions
+  about which components use the NPU. Preserves all existing functionality;
+  resolves the issue where `detection_mode: "fixed_crop"` could not share a
+  VDevice with the Hailo classifier path. See
+  `docs/investigations/hailo-2026-04-22.md` for full context.
+
+---
+
+### Phase 8 — Observation Logging for Full Classification Stream (PR #51 feat/log-suppressed-observations)
+
+#### Added
+- **`BirdObservation.dispatched: bool`** field on the schema, default `True`.
+  When True: observation passed the confidence threshold and cooldown gates
+  and was dispatched via the notifier. When False: observation was classified
+  but suppressed due to sub-threshold confidence or active cooldown. Default
+  True preserves backward compatibility — existing observations.jsonl records
+  without the field deserialize as dispatched=True, matching historical
+  reality where only dispatched observations were logged.
+- **`Notifier.log_suppressed(observation)`** public method. Writes to the
+  same `observations.jsonl` as `dispatch()` but marks `dispatched=False`
+  and produces no user-facing side effects (no push, no webhook, no email,
+  no print). Used by the agent for threshold and cooldown gate failures.
+- **Three new test classes, 12 tests total**: `TestLogSuppressed` (5),
+  `TestDispatchedField` (3), `TestCycleSuppressedLogging` (4) verifying
+  file write behavior, dispatched marking, no side effects, media path
+  preservation, immutability, backward compatibility, and agent wiring.
+
+#### Fixed
+- **Orphan observations** — During April 20 deployment, 5186 of 5624
+  captured frames (92%) had no corresponding entry in observations.jsonl.
+  Frames were captured, classified, and fused, but when
+  `BirdAgent._cycle()` returned early from the confidence threshold or
+  cooldown gate, the observation object was garbage-collected with only a
+  DEBUG log line. This made it impossible to analyze visual classifier
+  behavior on real bird events that were simply below the user-notification
+  threshold (confidence 0.20 at testing level). PR #50's color and focus
+  fixes could not be measured against the April 20 baseline because only
+  the tip of the iceberg was in the log.
+
+#### Changed
+- **`BirdAgent._cycle()`** restructured to populate media paths
+  (`audio_path`, `image_path`, `image_path_2`) BEFORE the threshold gate
+  so suppressed observations retain image/audio references for later
+  analysis. Threshold gate failure now calls `notifier.log_suppressed()`
+  instead of returning None silently. Cooldown gate failure now calls
+  `notifier.log_suppressed()` instead of returning None silently. Dispatch
+  path unchanged — media paths still populated, `notifier.dispatch()`
+  still called.
+- **`Notifier.dispatch()`** now explicitly marks `dispatched=True` via
+  `model_copy` before logging, so the logged record reflects reality.
+
+#### Verification
+- Laptop-side: 116 tests in `tests/notify/test_notifier.py` and
+  `tests/agent/test_bird_agent.py` combined, all passing.
+- Pi-side (April 21 03:58 PDT deploy): service active, new `dispatched`
+  field present on every record, `dispatched=False` records confirmed in
+  live observations.jsonl. In 30-minute indoor window post-deploy: 2
+  dispatched + 110 suppressed = 112 classifications logged, vs. ~2 that
+  would have been logged pre-PR. 55× increase in log visibility.
+
+#### Backward compatibility
+- `observations.jsonl` consumers that don't know about `dispatched` field
+  see additional records with `dispatched: false`; they can ignore the
+  field and treat all records as before
+- `observation_tools.py` LLM agent tools can filter `dispatched=True` to
+  preserve existing "user saw it" semantics
+- Pre-PR records loaded from `observations.jsonl` deserialize with
+  `dispatched=True` by default, matching their historical meaning
+
+### Test count
+- 616 passing, 6 deselected (hardware), CI green
+
+---
+
+### Phase 8 — Vision Color Format and Continuous Autofocus (PR #50 fix/vision-color-and-focus)
+
+#### Fixed
+- **BGR/RGB color channel swap** — picamera2's `RGB888` format returns
+  bytes in B-G-R order in the numpy array, a long-standing libcamera
+  convention. Every frame fed to the frozen EfficientNet (trained on
+  NABirds RGB) had red and blue channels swapped. Confirmed by observing
+  that orange feeder peels appeared blue in saved PNGs — the direct
+  signature of an R↔B swap. Classifier was being given systematically
+  miscolored inputs throughout Phase 5-8 evaluation.
+
+- **Fixed infinity focus** — Pi Camera Module 3 autofocus was never
+  configured. libcamera defaults to manual focus at lens position 0.0
+  (infinity). Birds at the feeder sit ~30cm from the lens (macro range),
+  well outside the fixed focus plane, producing soft captures throughout
+  Phase 5-8 evaluation.
+
+Together these explain the observation-log pattern of audio detecting
+real birds at 0.80+ confidence while vision returns scene-floor
+predictions on the same frames.
+
+#### Changed
+- **`src/vision/capture.py`** — `_open_cameras()`:
+  - Switch format from `RGB888` to `BGR888` (true RGB memory layout —
+    libcamera's `BGR888` string maps to R-G-B byte order in the numpy
+    array, inverse of intuition)
+  - Add `libcamera.controls.AfModeEnum.Continuous` on both cameras after
+    configure
+  - Graceful fallback if libcamera/AF unavailable (logs warning, continues
+    with fixed focus)
+  - Comprehensive docstring explaining both gotchas for future contributors
+
+#### Verification
+- Laptop-side: all existing tests in `tests/vision/test_capture.py` pass.
+- Pi live validation prior to merge: `test_pr50_live.py` against both
+  cameras — both opened successfully, `AfMode.Continuous` accepted by
+  both sensors, autofocus confirmed active (cam0 LensPosition observed
+  moving 2.20 → 2.07 → 1.80 across 3 frames — lens physically hunting).
+  Visual color inspection of saved PNGs shows true-to-life colors.
+- Post-merge production validation (April 21 03:17 PDT): journalctl
+  confirms `Continuous autofocus enabled on cam0`, `Continuous autofocus
+  enabled on cam1`, `Both cameras opened and started`. Service stable.
+
+#### Known limitations
+- Does NOT address crop region coverage. Static per-camera crops
+  (`feeder_crop_cam0` = `{x:630, y:130, w:700, h:580}`,
+  `feeder_crop_cam1` = `{x:420, y:130, w:700, h:580}`) remain fixed.
+  Birds that land outside the crop are invisible to the classifier
+  regardless of color or focus correction. Phase 8+ option:
+  bird-detection-gate architectural change making YOLO always-on rather
+  than A/B.
+
+#### Expected impact
+- EfficientNet trained on RGB now receives RGB (previously received BGR).
+  Feature extraction should align with training distribution.
+- Feeder-distance birds now in focus plane. Feather patterns, head shape,
+  eye rings legible for classifier.
+- Empirical validation pending April 21 daylight bird activity.
+
+### Test count
+- 616 passing (unchanged), 6 deselected, CI green
+
+---
+
+### Phase 8 — Notifier Network Resilience (PR #49 fix/notifier-timeout-and-retry)
+
+#### Fixed
+- **Pushover push failures on marginal WiFi** — initial notifier used a fixed
+  5-second timeout in `_push()` with no retry logic. Field testing on April 20
+  with home WiFi at -72 dBm signal and 11-22 KB/s measured upload speeds
+  produced a 100% failure rate on image-attached pushes: at ~15 KB/s, a 500KB
+  capture frame takes ~35 seconds to upload, but the 5s timeout fires first.
+  Between 17:19 and 17:44 PDT, 14 consecutive push notifications failed with
+  `urlopen error The write operation timed out` — including the peak HOFI
+  detection at 80.7% fused confidence during a 10-minute feeder visit. All 14
+  observations were correctly classified and persisted to `observations.jsonl`
+  with valid `image_path` entries pointing to captured frames on disk — only
+  the network upload to Pushover failed. Text-only pushes (`_push_text` at
+  ~500 bytes with a 10s timeout) succeeded intermittently, masking the
+  problem in casual use.
+
+#### Added
+- `src/notify/notifier.py` — new private `_post_to_pushover(data, content_type, *, context) -> bool`
+  helper method used by both `_push()` and `_push_text()`. Features:
+  - **Payload-scaled timeout**: `timeout = base + (payload_kb * per_kb_multiplier)`.
+    Default 10s base + 0.1s/KB yields 60s for 500KB images, 10s for small
+    text pushes. Ratio targets a conservative 10 KB/s upload floor.
+  - **Retry with exponential backoff**: 3 attempts by default, spacing
+    `backoff * 2^(attempt-1)` seconds between them — 2s / 4s / 8s at
+    default base=2.0.
+  - **Failure-mode discrimination**: retries on transient network errors
+    (`OSError`, `urllib.error.URLError`, `TimeoutError`). Does NOT retry
+    on Pushover API-level rejections (`status != 1`) — those won't recover
+    on retry and would just hammer the API.
+  - **Observability**: each attempt logs distinct lines. Success logs
+    payload size, timeout used, and retry count when succeeded on retry ≥ 2.
+- `src/notify/notifier.py` — four new constructor parameters with defaults:
+  `push_base_timeout_seconds: float = 10.0`, `push_per_kb_timeout_seconds: float = 0.1`,
+  `push_max_attempts: int = 3`, `push_retry_backoff_seconds: float = 2.0`.
+  Stored as `self.` attributes and consumed by the helper.
+- `configs/notify.yaml` — new `push.network` block with all four knobs and
+  extensive comments explaining payload scaling, retry semantics, and
+  failure-mode discrimination. `from_config()` reads the block with defaults.
+- `tests/notify/test_notifier.py` — new `TestNetworkResilience` class with
+  6 tests covering: timeout-scales-with-payload-size, retries-on-timeout,
+  success-after-retry, no-retry-on-API-rejection, exponential-backoff-timing,
+  end-to-end `_push()` with image attachment recovers from transient failure.
+
+#### Changed
+- `src/notify/notifier.py` — `_push()` and `_push_text()` refactored to call
+  `_post_to_pushover()` instead of maintaining duplicate inline
+  `urllib.request.urlopen(...)` blocks. Removes ~40 lines of duplicated
+  error handling; both push paths now share identical resilience mechanics.
+- `src/notify/notifier.py` — ruff auto-fix: `socket.timeout` → `TimeoutError`
+  alias (UP041) in the exception handler tuple.
+
+#### Verification
+- Laptop-side: 71 tests in `tests/notify/test_notifier.py` (65 existing + 6
+  new), 616 tests across full suite, 0 failures, 0 new warnings. CI green.
+- Pi-side (April 20 19:14 PDT deploy):
+  - Startup text push delivered: `Pushover push sent: system text push | 0.2KB, timeout=10.0s`
+  - Production image-push validation with threshold temporarily dropped to
+    `0.005` to force dispatches: **5 consecutive 520KB image pushes succeeded
+    in 52 seconds** (19:24:22 AMCR, 19:24:31 HOFI, 19:24:40 WBNU, 19:25:09
+    AMCR, 19:25:14 WBNU), all with `timeout=62.3s` scaled payload. Zero
+    retries fired, meaning first-attempt uploads completed within budget on
+    the same WiFi that had 14 consecutive failures 4 hours earlier.
+  - Threshold reverted to 0.2 and service confirmed active.
+- Config merge conflict between Pi-local `channels.push: true` override and
+  committed `push.network` block was resolved manually via `nano` (stash →
+  pull → stash pop → resolve markers → `git stash drop`). YAML re-validated
+  with `python -c "import yaml; yaml.safe_load(...)"` before restart.
+
+#### Backward compatibility
+- All new constructor parameters have defaults → existing `Notifier(...)`
+  callers unchanged.
+- `push.network` block is optional in `notify.yaml` → existing deployments
+  without it use constructor defaults.
+- No public API changes visible outside the notifier module.
+
+#### Follow-ups opened (future PRs, not blocking)
+- Config drift pattern: any PR that structurally changes `notify.yaml` /
+  `hardware.yaml` / `thresholds.yaml` will conflict with Pi-local overrides.
+  `scripts/dev_config.py` handles re-applying overrides after a clean pull
+  but does not resolve merge conflicts. Future option: `configs/*.local.yaml`
+  overlay pattern, gitignored, merged at `from_config()` load time.
+- Add YAML-validation step to `pi-deploy` shortcut (run `yaml.safe_load`
+  before `systemctl restart`) — would have caught the merge-marker
+  corruption in 1s instead of a 30s restart-loop.
+- Pi-deploy observations expected overnight: first "succeeded on attempt 2/3"
+  line will confirm the retry logic engaging (rather than just the scaled
+  timeout carrying everything).
+
+### Test count
+- 616 passing, 6 deselected (hardware), CI green
+
+---
+
+### Fixed (Phase 8)
+- **Hailo YOLO mode: fix `HAILO_STREAM_NOT_ACTIVATED(72)` on shared VDevice** — the shared Hailo VDevice created by `VisionCapture` for YOLO detection was instantiated without a scheduling algorithm. With the HailoRT 4.23.0 `InferModel` API, this causes every inference call to fail with `HAILO_STREAM_NOT_ACTIVATED(72)` and write zeros to the output buffer, masking all bird detections. The fix is to create the VDevice with `HailoSchedulingAlgorithm.ROUND_ROBIN`, matching the pattern already used in `src/vision/hailo_extractor.py` and `scripts/benchmark_hailo.py`. A new `_create_shared_vdevice()` helper in `src/vision/capture.py` centralizes this requirement so any future code needing a shared VDevice gets the correct configuration by default. Also removes a duplicated preprocessing block in `HailoDetector.detect()` that was a leftover from an earlier edit.
+- **Hailo YOLO mode: remove manual `activate()`/`deactivate()` under scheduler** — follow-up to the ROUND_ROBIN fix above. Once the VDevice switched to scheduler-managed activation, the manual `self._configured.activate()` call in `HailoDetector.open()` started raising `HAILO_INVALID_OPERATION(6)` with the message "Manually activate a core-op is not allowed when the core-op scheduler is active!". Under a ROUND_ROBIN scheduler the chip handles activation and deactivation at inference time, so `HailoDetector.open()` now only configures the model and `HailoDetector.close()` releases the reference without calling `deactivate()`. This matches the existing pattern in `HailoVisualExtractor`. Reproduced on Pi hardware: prior error was swallowed by the detector's try/except and the service fell back to `fixed_crop` silently, so YOLO mode appeared to load but immediately deactivated itself every cycle.
+
+---
+
+### Phase 8 — Audio device lookup by name (fix/audio-device-lookup-by-name)
+
+#### Added
+- `src/audio/capture.py` — `AudioCapture` now resolves the sounddevice
+  index by name substring (`device_name`) with fallback to `device_index`.
+  Lookup happens lazily on first `capture_window()` call, cached for
+  subsequent captures. New private `_resolve_device_index()` method
+  encapsulates the full resolution chain with descriptive error messages
+  listing available devices when nothing resolves.
+- `configs/hardware.yaml` — new optional `microphone.device_name` key
+  (defaults to `"USB PnP Audio Device"`). Committed `device_index` changed
+  from `1` to `0` to match the deployed Pi hardware.
+- `tests/audio/test_capture.py` — new file, 32 unit tests across 7 classes
+  covering initialization, `from_config()`, device resolution (name match,
+  substring match, first match wins, input-channel filtering, fallback
+  paths, out-of-range errors), energy gate (below/above/near threshold),
+  WAV output (file creation, timestamp format, mono int16), device
+  resolution caching (resolves once, reuses cached index), and error
+  handling (sounddevice not installed, recording failures). Mocks
+  `sounddevice` via `patch.dict(sys.modules, ...)` since capture.py
+  imports the module lazily inside function bodies.
+
+#### Fixed
+- Fifine USB mic sounddevice index was non-deterministic across reboots
+  and USB replug events. On the April 19 deployment, the index silently
+  shifted from 1 to 0, causing every audio capture cycle to return
+  `audio_result: null` for hours before anyone noticed. PR-A's override
+  tool (`scripts/dev_config.py`) was a workaround — this PR is the
+  structural fix. Audio capture now works regardless of enumeration order,
+  across reboots, on different Pi hardware, and when new USB audio devices
+  (future webcams with built-in mics, etc.) are plugged in.
+
+#### Changed
+- `docs/PI_DEPLOYMENT.md` — "Microphone not capturing" troubleshooting
+  entry rewritten to reflect the new by-name resolution. Shows how to
+  read the new startup log lines (`Audio device resolved by name: ... → index N`)
+  and gives three decision branches based on what the logs report. Old entry
+  pointed at this PR as a future fix; new entry treats by-name lookup as
+  the default and documents how to diagnose remaining edge cases.
+
+#### Verification
+- Laptop-side: 610 tests passing, 6 deselected (hardware-only), full
+  suite including 32 new `test_capture.py` tests and unchanged existing
+  578 tests.
+- Pi-side: deferred to first post-merge `pi-deploy`. Will verify via
+  startup log line (`Audio device resolved by name: 'USB PnP Audio Device'
+  → index 0`) and continued RMS values in `pi-logs` confirming audio
+  capture unchanged from current production behavior.
+
+#### Follow-up — can be removed after this lands
+- The hand-edited `microphone.device_index: 0` on the Pi's local
+  `configs/hardware.yaml` is no longer needed — the committed default is
+  now `0`, and even if it weren't, the by-name lookup would find the
+  Fifine correctly.
+
+---
+
+### Phase 8 — Pi Tooling Recovery (fix/recover-pi-tooling)
+
+---
+
+### Phase 8 — Pi Tooling Recovery (fix/recover-pi-tooling)
+
+#### Recovered and versioned Pi deployment tooling
+- `pi.ps1` — Laptop-side PowerShell shortcuts for managing the deployed Pi
+  via SSH. Dot-source into any session with `. .\pi.ps1`. Functions:
+  `pi-ssh`, `pi-status`, `pi-logs`, `pi-logs-since [time]`, `pi-stop`,
+  `pi-start`, `pi-restart`, `pi-run [seconds]`, `pi-config-check`,
+  `pi-pull`, `pi-deploy`. Host is configurable via `$env:AVIS_PI_HOST`
+  with a fallback to the LAN mDNS hostname `birdfeeder01@birdfeeder.local`
+  — no hardcoded IP addresses in the repo.
+- `scripts/install_service.sh` — one-command Pi systemd setup. Previously
+  lived only on the Pi; now committed with executable bit preserved.
+- `docs/PI_DEPLOYMENT.md` — consolidated Pi deployment guide covering
+  first-time setup, laptop-side `pi.ps1` configuration, SSH key auth, the
+  config override model, daily workflow, and troubleshooting entries for
+  every issue we've hit during Phase 5–8 deployment (YAML corruption,
+  audio device shift, Hailo errors, mDNS resolution).
+- `docs/SETUP.md` — Pi Deployment section replaced with a pointer to
+  `PI_DEPLOYMENT.md` plus a quick-reference for the daily deploy command
+  and feeder crop tuning workflow. Removed stale `nano` instructions that
+  referenced incorrect YAML keys.
+
+#### Replaced `dev_config.sh` with Python-based override tool
+- `scripts/dev_config.py` — new Python rewrite using `yaml.safe_load` /
+  `yaml.safe_dump` to apply Pi-local config overrides by real key path.
+  Declarative `PI_OVERRIDES` list at the top of the file is the only thing
+  anyone needs to edit when overrides change. Backs up each config to
+  `configs/*.yaml.bak` before modifying, validates all configs parse
+  cleanly after application, and exits non-zero with a clear error message
+  on any failure. Idempotent: safe to run multiple times.
+- `scripts/dev_config.sh` — deleted. `pi-pull` now calls the Python script.
+- `.gitignore` — added `configs/*.yaml.bak` rule so auto-generated backups
+  never land in commits.
+
+#### Bugs fixed (silent failures in the old `dev_config.sh`)
+- `s/threshold: 0.70/threshold: 0.10/` never matched anything. The actual
+  key is `confidence_threshold`, not `threshold`. Every `git pull` on the
+  Pi had silently left the dispatch threshold at the committed default
+  of 0.70 rather than the 0.10 we thought was being applied. Observation
+  logs captured during this period reflect threshold 0.70, not 0.10.
+- `s/enabled: false/enabled: true/` matched broadly. It only affected
+  `hailo.enabled` because that was the only `enabled: false` in the file,
+  but any future config block with the same pattern would have been
+  silently flipped too. New tool targets the exact key path.
+- Per-camera crop overrides (`feeder_crop_cam0`, `feeder_crop_cam1`) were
+  not handled at all — the multi-line YAML block couldn't be managed with
+  sed. They had to be manually uncommented after every `git pull`. Now
+  baked in as structured override values.
+
+#### Verification status
+- Laptop-side: `dev_config.py` tested against committed `configs/*.yaml`
+  — all seven overrides applied cleanly, backups written, configs still
+  parse after application, `git checkout configs/` restores clean state.
+- `pi.ps1` loads without errors, banner prints, `pi-status` verified
+  end-to-end against deployed Pi (systemd `active (running)` confirmed,
+  live log tail rendered correctly).
+- Pi-side: `dev_config.py` hardware verification happens on first post-
+  merge pull. Old `dev_config.sh` remains on the Pi until that point.
+
+### Test count
+- No new tests in this PR (tooling-only change). Existing 578 still pass.
+
+---
+
+### Phase 8 — Live Deployment Tuning (feat/per-camera-crop)
+
+#### Per-camera crop override
+- `src/vision/capture.py` — added `crop_x_cam1`, `crop_y_cam1`,
+  `crop_width_cam1`, `crop_height_cam1` params to `__init__()` with
+  `None` defaults falling back to shared crop values. `from_config()`
+  reads optional `feeder_crop_cam0` and `feeder_crop_cam1` blocks from
+  `hardware.yaml`, falling back to shared `feeder_crop` if absent.
+  `_process_frame()` selects crop region by `camera_index` — cam0 uses
+  primary crop, cam1 uses override crop.
+- `configs/hardware.yaml` — added `feeder_crop_cam0` and
+  `feeder_crop_cam1` optional override blocks with comments. Deployed
+  values tuned during live calibration session 2026-04-19:
+  cam0 x:630, cam1 x:420, y:130, 700×580.
+- Backward compatible — existing deployments without per-camera keys
+  use shared `feeder_crop` unchanged.
+
+### Test count
+- TBD — existing capture tests pass, new per-camera tests needed
+
+---
+
+### Phase 7 — Held-out Evaluation + Pi Autonomous Deployment (PR feat/phase7-evaluation)
+
+#### Final evaluation on held-out test set
+- `notebooks/phase7_evaluation.ipynb` — complete evaluation on data never
+  touched during training, validation, or hyperparameter selection.
+  Fixed KNN feature extraction (preprocess_file returns spectrograms not
+  raw MFCCs — was producing 256-dim vectors instead of 80-dim), fixed SVM
+  feature extraction (reads HOG params from bundle not hardcoded values),
+  fixed experiments.csv append to 14-column schema.
+- `notebooks/results/phase7/` — 7 evaluation artifacts:
+  audio_birdnet_confusion_matrix.png, audio_birdnet_per_class_f1.png,
+  visual_efficientnet_confusion_matrix.png, visual_efficientnet_per_class_f1.png,
+  model_comparison_table.csv, ablation_dataset_size.png,
+  fusion_weight_sensitivity.png
+- `notebooks/results/experiments.csv` — 15 rows total, 5 new Phase 7
+  held-out rows appended (KNN, BirdNET, SVM, EfficientNet, fused)
+- `notebooks/audio_baseline.ipynb` — re-run to regenerate
+  audio_knn_baseline.pkl, baseline evaluation artifacts frozen
+- `notebooks/visual_baseline.ipynb` — re-run to regenerate
+  visual_svm_baseline.pkl, baseline evaluation artifacts frozen
+
+#### Results (held-out test set — unbiased final estimates)
+- Audio KNN (MFCC mean+std):          macro F1 = 0.012  n=86
+- Audio BirdNET pretrained:           macro F1 = 0.776  n=86   (67× KNN)
+- Visual SVM (HOG + color hist):      macro F1 = 0.118  n=672
+- Visual Frozen EfficientNet+LogReg:  macro F1 = 0.931  n=672  (7.9× SVM)
+- Fused BirdNET+EfficientNet:         macro F1 = 0.945  coverage=96%
+- Fusion weight sensitivity: optimal audio=0.05, F1=0.974
+- Dataset size ablation: F1 flattens above 50% training data — pretrained
+  features dominate, not dataset size
+
+#### Pi autonomous deployment
+- `scripts/avis.service` — installed to /etc/systemd/system/ on Pi
+  sudo systemctl enable avis confirmed — starts automatically on every boot
+  Hardware verified April 18 2026: active (running), Gemini calling,
+  cameras open, detections firing within 10s of power-on
+- `scripts/install_service.sh` — one-command Pi systemd setup script
+- `pi.ps1` — PowerShell dot-source file for laptop Pi management.
+  pi-ssh, pi-status, pi-logs, pi-stop, pi-start, pi-restart,
+  pi-run (smoke test), pi-pull, pi-deploy
+
+#### BaselineOptimizer stub
+- `src/agent/baseline_optimizer.py` — AutoML agent stub, architecture
+  fully documented. Targets OpenClaw framework for long-running agentic
+  loops. Perceive→reason→act→memory over feature/hyperparameter search space.
+  NotImplementedError on all public methods until Phase 8.
+- `tests/agent/test_baseline_optimizer.py` — 3 tests covering stub behavior
+
+### Test count
+- 578 passing, 6 deselected (hardware), CI green
+
+---
+
 ### Phase 6+ — Agentic LLM Layer (PR #42 feat/agentic-llm-layer)
 
 #### Dual-agent architecture

@@ -46,7 +46,12 @@ import yaml
 
 from src.audio.capture import AudioCapture
 from src.audio.classify import AudioClassifier, NoBirdDetectedError
-from src.data.schema import BirdObservation
+from src.data.schema import (
+    GATE_REASON_BELOW_CONFIDENCE_THRESHOLD,
+    GATE_REASON_NO_BIRD_DETECTED,
+    GATE_REASON_SPECIES_COOLDOWN,
+    BirdObservation,
+)
 from src.fusion.combiner import ScoreFuser
 from src.notify.notifier import Notifier
 from src.vision.capture import VisionCapture
@@ -226,17 +231,31 @@ class BirdAgent:
         """
         Execute one full perception-decision-action cycle.
 
-        Phase 5 cycle steps:
+        Phase 8 cycle steps (Branch 2 added the bird-presence gate):
             1. Capture audio window → energy gate → save WAV → get file path
-            2. Capture frames from both cameras → motion gate → save PNGs
-            3. Classify audio (BirdNET on WAV file path) if captured
-            4. Classify primary camera frame if captured
-            5. Classify secondary camera frame if captured
-            6. Fuse all available results
-            7. Apply confidence threshold gate
-            8. Apply cooldown gate (suppress repeated same-species notifications)
-            9. Populate media paths on observation
-            10. Dispatch via notifier
+            2. Capture frames from both cameras → motion gate → bird-presence
+               gate → save PNGs. Each CaptureResult carries gate_passed +
+               gate_reason populated by VisionCapture.
+            3. Classify audio (BirdNET on WAV file path) if captured.
+            4. Classify primary camera frame if capture present AND gate_passed.
+            5. Classify secondary camera frame if capture present AND gate_passed.
+            6. If both cameras gated out AND no audio → log gate-suppressed
+               observation (gate_reason="no_bird_detected") and exit. This is
+               the Phase 8 fix — previously these frames were silently classified
+               as the nearest-species-in-feature-space, producing noise dispatches.
+            7. Fuse all available results.
+            8. Populate media paths, then confidence threshold gate
+               (suppressed observations logged with
+               gate_reason="below_confidence_threshold").
+            9. Cooldown gate (suppressed observations logged with
+               gate_reason="species_cooldown").
+           10. Dispatch via notifier (only if both gates pass).
+
+        PR #51 introduced notifier.log_suppressed() so below-threshold and
+        cooldown-suppressed observations are preserved in observations.jsonl.
+        Branch 2 extends this with the gate_reason field, so each suppressed
+        record now carries the specific reason for suppression (enabling the
+        pre/post-gate ablation analysis in the Phase 8 report).
 
         Returns:
             BirdObservation if dispatched, else None.
@@ -267,7 +286,6 @@ class BirdAgent:
 
         if capture_primary is not None:
             image_path = capture_primary.image_path
-
         if capture_secondary is not None:
             image_path_2 = capture_secondary.image_path
 
@@ -281,8 +299,15 @@ class BirdAgent:
             except Exception:
                 logger.exception("Audio classifier failed — skipping audio this cycle.")
 
-        # ── Step 4: Primary camera classification ─────────────────────────────
-        if capture_primary is not None and self.visual_classifier is not None:
+        # ── Step 4: Primary camera classification (gated) ─────────────────────
+        # Only classify if the capture exists AND its bird-presence gate passed.
+        # Getattr is used for backward-compat with CaptureResult objects from
+        # pre-Branch-2 code paths (or tests) that don't set gate_passed.
+        # Default True means: without a gate, behave as before — always classify.
+        primary_gate_passed = capture_primary is not None and getattr(
+            capture_primary, "gate_passed", True
+        )
+        if primary_gate_passed and self.visual_classifier is not None:
             try:
                 visual_result = self.visual_classifier.predict(
                     capture_primary.frame,
@@ -296,8 +321,11 @@ class BirdAgent:
             except Exception:
                 logger.exception("Visual classifier (cam0) failed — skipping this cycle.")
 
-        # ── Step 5: Secondary camera classification ───────────────────────────
-        if capture_secondary is not None and self.visual_classifier is not None:
+        # ── Step 5: Secondary camera classification (gated) ───────────────────
+        secondary_gate_passed = capture_secondary is not None and getattr(
+            capture_secondary, "gate_passed", True
+        )
+        if secondary_gate_passed and self.visual_classifier is not None:
             try:
                 visual_result_2 = self.visual_classifier.predict(
                     capture_secondary.frame,
@@ -311,47 +339,90 @@ class BirdAgent:
             except Exception:
                 logger.exception("Visual classifier (cam1) failed — skipping cam1 this cycle.")
 
+        # ── Step 6: Gate-only suppression path (Phase 8 fix) ─────────────────
+        # If both cameras produced captures but BOTH had their bird-presence
+        # gates block the frame, AND we got no audio detection either, the
+        # whole cycle is a "motion but no bird" event. Rather than silently
+        # returning None (losing the record) or running the classifier on
+        # empty scene (producing noise), we log a gate-suppressed observation
+        # with the appropriate reason. This is the core Phase 8 fix.
+        any_capture = capture_primary is not None or capture_secondary is not None
+        any_gate_passed = primary_gate_passed or secondary_gate_passed
+        if any_capture and not any_gate_passed and audio_result is None:
+            # Prefer the primary camera's gate_reason; fall back to secondary.
+            gate_reason = (
+                getattr(capture_primary, "gate_reason", None)
+                or getattr(capture_secondary, "gate_reason", None)
+                or GATE_REASON_NO_BIRD_DETECTED
+            )
+            self._log_gate_suppressed(
+                gate_reason=gate_reason,
+                image_path=image_path,
+                image_path_2=image_path_2,
+                audio_path=audio_path,
+            )
+            return None
+
         # ── Nothing to fuse ───────────────────────────────────────────────────
         if audio_result is None and visual_result is None and visual_result_2 is None:
             logger.debug("Agent cycle — no classifier inputs available.")
             return None
 
-        # ── Step 6: Fuse ──────────────────────────────────────────────────────
+        # ── Step 7: Fuse ──────────────────────────────────────────────────────
         observation = self.fuser.fuse(
             audio_result=audio_result,
             visual_result=visual_result,
             visual_result_2=visual_result_2,
         )
 
-        # ── Step 7: Confidence threshold gate ─────────────────────────────────
-        if observation.fused_confidence < self.confidence_threshold:
-            logger.debug(
-                "Below threshold: %s %.3f < %.3f",
-                observation.species_code,
-                observation.fused_confidence,
-                self.confidence_threshold,
-            )
-            return None
+        # ── Step 8: Confidence threshold gate ─────────────────────────────────
+        # Populate media paths BEFORE gate checks so suppressed observations
+        # retain image/audio references for analysis.
+        # Propagate detection_mode from whichever camera capture produced the result.
+        # CaptureResult.detection_mode reflects the actual crop strategy used
+        # (fixed_crop or yolo). Without this propagation, BirdObservation always
+        # records "fixed_crop" regardless of which mode ran — blocks A/B analysis.
+        detection_mode = "fixed_crop"  # safe default
+        if capture_primary is not None and getattr(capture_primary, "detection_mode", None):
+            detection_mode = capture_primary.detection_mode
+        elif capture_secondary is not None and getattr(capture_secondary, "detection_mode", None):
+            detection_mode = capture_secondary.detection_mode
 
-        # ── Step 8: Cooldown gate ─────────────────────────────────────────────
-        if self._is_on_cooldown(observation.species_code):
-            logger.debug(
-                "Cooldown active for %s — suppressing notification.",
-                observation.species_code,
-            )
-            return None
-
-        # ── Step 9: Populate media paths ──────────────────────────────────────
-        # Pydantic models are immutable by default — rebuild with media paths set.
         observation = observation.model_copy(
             update={
                 "audio_path": str(audio_path) if audio_path else None,
                 "image_path": str(image_path) if image_path else None,
                 "image_path_2": str(image_path_2) if image_path_2 else None,
+                "detection_mode": detection_mode,
             }
         )
 
-        # ── Step 10: Dispatch ─────────────────────────────────────────────────
+        if observation.fused_confidence < self.confidence_threshold:
+            observation = observation.model_copy(
+                update={"gate_reason": GATE_REASON_BELOW_CONFIDENCE_THRESHOLD}
+            )
+            logger.debug(
+                "Below threshold: %s %.3f < %.3f — logging as suppressed.",
+                observation.species_code,
+                observation.fused_confidence,
+                self.confidence_threshold,
+            )
+            self.notifier.log_suppressed(observation)
+            return None
+
+        # ── Step 9: Cooldown gate ─────────────────────────────────────────────
+        if self._is_on_cooldown(observation.species_code):
+            observation = observation.model_copy(
+                update={"gate_reason": GATE_REASON_SPECIES_COOLDOWN}
+            )
+            logger.debug(
+                "Cooldown active for %s — logging as suppressed.",
+                observation.species_code,
+            )
+            self.notifier.log_suppressed(observation)
+            return None
+
+        # ── Step 10: Dispatch ────────────────────────────────────────────────
         self.notifier.dispatch(observation)
         self._last_dispatch[observation.species_code] = datetime.now(UTC)
 
@@ -364,6 +435,61 @@ class BirdAgent:
             "✓" if visual_result_2 else "–",
         )
         return observation
+
+    def _log_gate_suppressed(
+        self,
+        gate_reason: str,
+        image_path: Path | str | None,
+        image_path_2: Path | str | None,
+        audio_path: Path | str | None,
+    ) -> None:
+        """
+        Log a gate-suppressed observation — motion fired but the bird-presence
+        gate rejected the frame AND no audio detection filled the gap.
+
+        Without this method, motion-triggered empty-feeder frames would either
+        be silently skipped (losing the data for ablation analysis) or
+        dispatched as whatever the classifier confidently-but-wrongly picked
+        from scene texture. This was the root Phase 8 failure mode documented
+        in docs/investigations/hailo-2026-04-22.md.
+
+        We synthesize a minimal BirdObservation with species_code="NONE",
+        fused_confidence=0.0, and gate_reason populated. The record preserves
+        the image/audio paths so researchers reviewing the log can correlate
+        gate-suppressed entries with the saved frames that produced them.
+
+        The sentinel species_code="NONE" is deliberate. Schema-wise, the
+        validator requires a non-empty uppercase code; "NONE" satisfies that
+        while being unambiguous as a not-a-species marker. Consumers filtering
+        observations.jsonl for real detections should filter on either
+        gate_reason is None or species_code != "NONE".
+
+        Args:
+            gate_reason:  Why the observation was suppressed. Typically
+                          GATE_REASON_NO_BIRD_DETECTED from schema constants.
+            image_path:   Primary camera image path if saved.
+            image_path_2: Secondary camera image path if saved.
+            audio_path:   Audio capture path if any (usually None on
+                          gate-suppressed cycles).
+        """
+        observation = BirdObservation(
+            species_code="NONE",
+            common_name="(no bird detected)",
+            scientific_name="",
+            fused_confidence=0.0,
+            dispatched=False,
+            gate_reason=gate_reason,
+            audio_path=str(audio_path) if audio_path else None,
+            image_path=str(image_path) if image_path else None,
+            image_path_2=str(image_path_2) if image_path_2 else None,
+        )
+        self.notifier.log_suppressed(observation)
+        logger.debug(
+            "Gate-suppressed cycle logged | reason=%s image=%s audio=%s",
+            gate_reason,
+            image_path,
+            audio_path,
+        )
 
     def _is_on_cooldown(self, species_code: str) -> bool:
         """

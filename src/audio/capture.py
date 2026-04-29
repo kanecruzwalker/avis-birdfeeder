@@ -5,10 +5,33 @@ Records audio from the Fifine USB microphone in fixed-duration windows
 and saves them to disk for BirdNET classification.
 
 Hardware:
-    Device:      Fifine USB (sounddevice index 1, hw:2,0)
+    Device:      Fifine USB (resolved by name: "USB PnP Audio Device")
     Sample rate: 48000 Hz native — no resampling needed
     Channels:    1 (mono)
     Window:      3 seconds (BirdNET training convention — do not change)
+
+Device resolution (new in PR-B):
+    sounddevice enumerates audio devices in an order that is not stable
+    across reboots or USB replug events. On the deployed Pi, the Fifine
+    has been observed at index 0 and index 1 in different sessions.
+    Hardcoding a device_index in hardware.yaml led to silent audio failure
+    for hours when the Pi rebooted and the Fifine shifted slots.
+
+    We now resolve the device by name substring match. A distinctive
+    fragment of the device name (e.g. "USB PnP Audio Device") is matched
+    against sd.query_devices() output at first capture. The resulting
+    index is cached for subsequent captures.
+
+    Fallback chain:
+        1. If device_name is set and matches a device → use that index
+        2. If device_name is set but no match → log warning, use device_index
+        3. If device_name is None → use device_index directly
+        4. If nothing resolves to a valid input device → RuntimeError
+
+    This scheme tolerates:
+        - USB replug / reboot shuffling indices
+        - Different hardware (Dan's Pi, dev laptops)
+        - Adding new audio devices (future USB webcams with built-in mics)
 
 Pipeline:
     sounddevice.rec(window_samples)
@@ -31,15 +54,15 @@ Why RMS energy gate?
     Threshold is tunable in configs/thresholds.yaml: audio.energy_threshold.
 
 Config keys consumed:
-    hardware.yaml:    microphone.device_index, microphone.sample_rate,
-                      microphone.channels, microphone.window_seconds,
-                      microphone.dtype
+    hardware.yaml:    microphone.device_name (optional, preferred),
+                      microphone.device_index (fallback),
+                      microphone.sample_rate, microphone.channels,
+                      microphone.window_seconds, microphone.dtype
     thresholds.yaml:  audio.energy_threshold
     paths.yaml:       captures.audio
 
 Dependencies:
     sounddevice  — cross-platform audio I/O (wraps PortAudio)
-    scipy.io.wavfile — WAV writing (already in scipy, no extra install)
     numpy        — array operations
 """
 
@@ -64,6 +87,10 @@ class AudioCapture:
     the path to the saved WAV file (or None if the window was below the
     energy threshold and should be skipped).
 
+    Device resolution is lazy — sounddevice is only imported and queried
+    on the first capture_window() call. This keeps tests and dev environments
+    free of a hard sounddevice dependency.
+
     Usage:
         capture = AudioCapture.from_config("configs/")
         audio_path = capture.capture_window()
@@ -80,11 +107,15 @@ class AudioCapture:
         energy_threshold: float,
         output_dir: str | Path,
         dtype: str = "float32",
+        device_name: str | None = None,
     ) -> None:
         """
         Args:
-            device_index:     sounddevice device index for the Fifine USB mic.
-                              Confirmed as index 1 on the deployed Pi.
+            device_index:     sounddevice device index to use as a fallback if
+                              device_name is not set or cannot be matched.
+                              Held as the committed default for the deployed
+                              Pi; a misconfigured value is recoverable via
+                              device_name lookup.
             sample_rate:      Capture sample rate in Hz. Must be 48000 for BirdNET.
             channels:         Number of input channels. Fifine reports 1 (mono).
             window_seconds:   Duration of each capture window in seconds.
@@ -96,6 +127,10 @@ class AudioCapture:
             output_dir:       Directory where WAV files are saved.
                               Corresponds to paths.yaml: captures.audio.
             dtype:            sounddevice capture dtype. float32 throughout the pipeline.
+            device_name:      Optional substring to match against sounddevice device
+                              names. When set, the first matching input device is used
+                              regardless of device_index. Preferred over device_index
+                              for robustness against USB enumeration changes.
         """
         self.device_index = device_index
         self.sample_rate = sample_rate
@@ -104,13 +139,19 @@ class AudioCapture:
         self.energy_threshold = energy_threshold
         self.output_dir = Path(output_dir)
         self.dtype = dtype
+        self.device_name = device_name
         self._window_samples = int(sample_rate * window_seconds)
+
+        # Resolved index is set lazily on first capture_window() call so
+        # sounddevice import doesn't happen at construction time.
+        self._resolved_index: int | None = None
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         logger.info(
-            "AudioCapture initialized | device=%d sr=%d ch=%d window=%.1fs "
-            "energy_threshold=%.4f output=%s",
+            "AudioCapture initialized | device_name=%s device_index=%d sr=%d ch=%d "
+            "window=%.1fs energy_threshold=%.4f output=%s",
+            repr(device_name) if device_name else "(none)",
             device_index,
             sample_rate,
             channels,
@@ -152,7 +193,106 @@ class AudioCapture:
             energy_threshold=thr["audio"]["energy_threshold"],
             output_dir=output_dir,
             dtype=mic.get("dtype", "float32"),
+            device_name=mic.get("device_name"),
         )
+
+    def _resolve_device_index(self) -> int:
+        """
+        Resolve which sounddevice index to use for capture.
+
+        Called lazily on first capture_window(). Result is cached in
+        self._resolved_index so subsequent captures reuse the same device
+        without re-querying sounddevice.
+
+        Resolution strategy:
+            1. If self.device_name is set, scan sounddevice.query_devices()
+               for an input device whose name contains device_name as a
+               substring. Use the first match.
+            2. If no name match (either device_name unset or no device matches),
+               fall back to self.device_index.
+            3. Validate the resulting index points to a device with at least
+               one input channel. If not, raise RuntimeError with a listing
+               of available devices for diagnosis.
+
+        Returns:
+            The resolved sounddevice index, guaranteed to be a valid input device.
+
+        Raises:
+            RuntimeError: If no valid input device can be resolved.
+        """
+        try:
+            import sounddevice as sd  # type: ignore[import]
+        except ImportError as exc:
+            raise RuntimeError(
+                "sounddevice is not installed. On Pi: pip install sounddevice. "
+                "On laptop, mock AudioCapture.capture_window() in tests."
+            ) from exc
+
+        devices = sd.query_devices()
+
+        # Try name-based lookup first
+        if self.device_name:
+            for i, dev in enumerate(devices):
+                name = dev.get("name", "")
+                inputs = dev.get("max_input_channels", 0)
+                if self.device_name in name and inputs > 0:
+                    logger.info(
+                        "Audio device resolved by name: %r → index %d (%r)",
+                        self.device_name,
+                        i,
+                        name,
+                    )
+                    return i
+
+            # Name was set but didn't match — log a warning and fall through
+            available = [
+                f"{i}={d.get('name', '?')!r}(inputs={d.get('max_input_channels', 0)})"
+                for i, d in enumerate(devices)
+            ]
+            logger.warning(
+                "Audio device name %r not found. Available: [%s]. "
+                "Falling back to device_index=%d.",
+                self.device_name,
+                ", ".join(available),
+                self.device_index,
+            )
+        else:
+            logger.info(
+                "No device_name configured — using device_index=%d directly.",
+                self.device_index,
+            )
+
+        # Validate the fallback index points to a real input device
+        if self.device_index < 0 or self.device_index >= len(devices):
+            available = [
+                f"{i}={d.get('name', '?')!r}(inputs={d.get('max_input_channels', 0)})"
+                for i, d in enumerate(devices)
+            ]
+            raise RuntimeError(
+                f"Audio device_index={self.device_index} is out of range. "
+                f"Available devices: [{', '.join(available)}]. "
+                f"Set microphone.device_name in hardware.yaml for robust resolution."
+            )
+
+        fallback_dev = devices[self.device_index]
+        if fallback_dev.get("max_input_channels", 0) < 1:
+            available = [
+                f"{i}={d.get('name', '?')!r}(inputs={d.get('max_input_channels', 0)})"
+                for i, d in enumerate(devices)
+            ]
+            raise RuntimeError(
+                f"Audio device_index={self.device_index} "
+                f"({fallback_dev.get('name', '?')!r}) has no input channels. "
+                f"Available input devices: [{', '.join(available)}]. "
+                f"Set microphone.device_name in hardware.yaml for robust resolution."
+            )
+
+        logger.info(
+            "Audio device fallback to index %d (%r)",
+            self.device_index,
+            fallback_dev.get("name", "?"),
+        )
+        return self.device_index
 
     def capture_window(self) -> Path | None:
         """
@@ -164,13 +304,15 @@ class AudioCapture:
         using threading, but sequential capture is simpler and sufficient for
         the 1-second loop interval.
 
+        Device index is resolved on first call and cached.
+
         Returns:
             Path to the saved WAV file, or None if the window was below the
             energy threshold (caller should skip audio classification this cycle).
 
         Raises:
-            RuntimeError: If sounddevice fails to open the device.
-                          Check that device_index is correct and mic is connected.
+            RuntimeError: If sounddevice fails to open the device, or if no
+                          valid input device can be resolved by name or index.
         """
         # Import here so sounddevice is only required on the Pi — laptop
         # tests can run without it by mocking this method.
@@ -182,10 +324,14 @@ class AudioCapture:
                 "On laptop, mock AudioCapture.capture_window() in tests."
             ) from exc
 
+        # Resolve device index lazily on first call
+        if self._resolved_index is None:
+            self._resolved_index = self._resolve_device_index()
+
         logger.debug(
             "Recording %.1fs audio window (device=%d, sr=%d)",
             self.window_seconds,
-            self.device_index,
+            self._resolved_index,
             self.sample_rate,
         )
 
@@ -197,13 +343,13 @@ class AudioCapture:
                 samplerate=self.sample_rate,
                 channels=self.channels,
                 dtype=self.dtype,
-                device=self.device_index,
+                device=self._resolved_index,
                 blocking=True,
             )
         except Exception as exc:
             raise RuntimeError(
-                f"sounddevice failed to record from device {self.device_index}: {exc}. "
-                "Verify mic is connected and device index is correct."
+                f"sounddevice failed to record from device {self._resolved_index}: {exc}. "
+                "Verify mic is connected and device_name/device_index are correct."
             ) from exc
 
         # Squeeze (window_samples, 1) → (window_samples,) for mono

@@ -31,7 +31,14 @@ import pytest
 
 from src.agent.bird_agent import BirdAgent
 from src.audio.classify import NoBirdDetectedError
-from src.data.schema import BirdObservation, ClassificationResult, Modality
+from src.data.schema import (
+    GATE_REASON_BELOW_CONFIDENCE_THRESHOLD,
+    GATE_REASON_NO_BIRD_DETECTED,
+    GATE_REASON_SPECIES_COOLDOWN,
+    BirdObservation,
+    ClassificationResult,
+    Modality,
+)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -64,16 +71,35 @@ def _make_observation(
     )
 
 
-def _make_capture_result(camera_index: int = 0) -> MagicMock:
-    """Build a mock CaptureResult with a valid preprocessed frame."""
+def _make_capture_result(camera_index: int = 0, gate_passed: bool = True) -> MagicMock:
+    """
+    Build a mock CaptureResult with a valid preprocessed frame.
+
+    Args:
+        camera_index: 0 (primary) or 1 (secondary).
+        gate_passed:  If True, frame is populated and classifier will run.
+                      If False, frame is None, gate_reason is set, classifier is skipped.
+                      Defaults to True for backward compatibility with pre-Branch-2 tests.
+    """
     import numpy as np
 
     cr = MagicMock()
-    cr.frame = np.zeros((224, 224, 3), dtype=np.float32)
-    cr.raw_frame = cr.frame
     cr.camera_index = camera_index
     cr.image_path = Path(f"/tmp/cam{camera_index}.png")
     cr.motion_score = 0.1
+    cr.gate_passed = gate_passed
+
+    if gate_passed:
+        cr.frame = np.zeros((224, 224, 3), dtype=np.float32)
+        cr.raw_frame = cr.frame
+        cr.gate_reason = None
+        cr.gate_confidence = 0.85
+    else:
+        cr.frame = None
+        cr.raw_frame = np.zeros((864, 1536, 3), dtype=np.uint8)
+        cr.gate_reason = GATE_REASON_NO_BIRD_DETECTED
+        cr.gate_confidence = None
+
     return cr
 
 
@@ -223,6 +249,244 @@ class TestCycleHappyPath:
         kwargs = agent.fuser.fuse.call_args.kwargs
         assert kwargs["audio_result"] is not None
         assert kwargs["visual_result"] is not None
+
+
+# ── _cycle — suppressed observation logging ───────────────────────────────────
+
+
+class TestCycleSuppressedLogging:
+    """
+    Tests for PR #51: observations suppressed by the confidence threshold or
+    cooldown gate must still be logged via notifier.log_suppressed() so the
+    full classification stream is preserved for analysis.
+    """
+
+    def test_below_threshold_calls_log_suppressed(self) -> None:
+        """Below-threshold observation must be logged as suppressed."""
+        obs = _make_observation(fused_confidence=0.4)
+        cap = _make_capture_result(camera_index=0)
+        agent = _make_agent(
+            fused_observation=obs,
+            confidence_threshold=0.7,
+            audio_capture_returns=Path("/tmp/fake.wav"),
+            vision_capture_returns=(cap, None),
+        )
+
+        agent._cycle()
+
+        agent.notifier.log_suppressed.assert_called_once()
+        agent.notifier.dispatch.assert_not_called()
+
+    def test_cooldown_calls_log_suppressed(self) -> None:
+        """Cooldown-suppressed observation must be logged as suppressed."""
+        obs = _make_observation(fused_confidence=0.9, species_code="HOFI")
+        cap = _make_capture_result(camera_index=0)
+        agent = _make_agent(
+            fused_observation=obs,
+            cooldown_seconds=30.0,
+            audio_capture_returns=Path("/tmp/fake.wav"),
+            vision_capture_returns=(cap, None),
+        )
+
+        agent._cycle()  # first dispatch consumes cooldown budget
+        agent._cycle()  # second should be suppressed by cooldown
+
+        assert agent.notifier.dispatch.call_count == 1
+        assert agent.notifier.log_suppressed.call_count == 1
+
+    def test_suppressed_observation_has_media_paths(self) -> None:
+        """
+        Even suppressed observations must carry media paths so analysis
+        can correlate logged records with saved frames.
+        """
+        obs = _make_observation(fused_confidence=0.4)
+        cap = _make_capture_result(camera_index=0)
+        agent = _make_agent(
+            fused_observation=obs,
+            confidence_threshold=0.7,
+            audio_capture_returns=Path("/tmp/fake.wav"),
+            vision_capture_returns=(cap, None),
+        )
+
+        agent._cycle()
+
+        suppressed_obs = agent.notifier.log_suppressed.call_args.args[0]
+        assert suppressed_obs.image_path is not None
+        assert suppressed_obs.audio_path is not None
+
+    def test_dispatch_populates_media_paths(self) -> None:
+        """
+        Sanity check: dispatch path (above threshold, no cooldown) must
+        still populate media paths, unchanged from before PR #51.
+        """
+        obs = _make_observation(fused_confidence=0.9)
+        cap = _make_capture_result(camera_index=0)
+        agent = _make_agent(
+            fused_observation=obs,
+            confidence_threshold=0.7,
+            audio_capture_returns=Path("/tmp/fake.wav"),
+            vision_capture_returns=(cap, None),
+        )
+
+        agent._cycle()
+
+        dispatched_obs = agent.notifier.dispatch.call_args.args[0]
+        assert dispatched_obs.image_path is not None
+        assert dispatched_obs.audio_path is not None
+
+
+# ── _cycle — bird-presence gate (Phase 8 / Branch 2) ──────────────────────────
+
+
+class TestCycleBirdPresenceGate:
+    """
+    Tests for the Phase 8 bird-presence gate added in Branch 2.
+
+    The gate runs per-camera as part of VisionCapture._process_frame. When
+    the gate blocks a frame (no bird detected), CaptureResult.gate_passed
+    is False, CaptureResult.frame is None, and CaptureResult.gate_reason
+    is set. The agent must:
+      - NOT call the visual classifier for gate-blocked captures
+      - Log a gate-suppressed observation when both cameras are blocked
+        AND no audio detection filled the gap
+      - Still dispatch normally when at least one modality has signal
+      - Populate gate_reason on observations suppressed by downstream
+        confidence and cooldown gates
+    """
+
+    def test_gate_blocked_skips_visual_classifier(self) -> None:
+        """Gate-blocked primary camera → visual_classifier.predict not called for cam0."""
+        cap_primary = _make_capture_result(camera_index=0, gate_passed=False)
+        agent = _make_agent(
+            audio_capture_returns=Path("/tmp/fake.wav"),
+            vision_capture_returns=(cap_primary, None),
+        )
+
+        agent._cycle()
+
+        # Visual classifier should never see cam0 frame
+        # (capture_window returned audio, so audio classifier still runs)
+        calls = agent.visual_classifier.predict.call_args_list
+        for call in calls:
+            # If predict was called at all, it was NOT with cam0
+            assert call.kwargs.get("camera_index") != 0
+
+    def test_both_cameras_gated_and_no_audio_logs_suppressed(self) -> None:
+        """Both cameras gated + no audio → log gate-suppressed, no dispatch."""
+        cap0 = _make_capture_result(camera_index=0, gate_passed=False)
+        cap1 = _make_capture_result(camera_index=1, gate_passed=False)
+        agent = _make_agent(
+            audio_capture_returns=None,  # no audio this cycle
+            vision_capture_returns=(cap0, cap1),
+        )
+
+        result = agent._cycle()
+
+        assert result is None
+        agent.notifier.dispatch.assert_not_called()
+        agent.notifier.log_suppressed.assert_called_once()
+        # Verify the suppressed observation has the expected gate_reason
+        suppressed = agent.notifier.log_suppressed.call_args.args[0]
+        assert suppressed.gate_reason == GATE_REASON_NO_BIRD_DETECTED
+        assert suppressed.dispatched is False
+
+    def test_both_cameras_gated_with_audio_still_proceeds(self) -> None:
+        """Both cameras gated BUT audio detected → cycle continues (audio-only dispatch)."""
+        cap0 = _make_capture_result(camera_index=0, gate_passed=False)
+        cap1 = _make_capture_result(camera_index=1, gate_passed=False)
+        obs = _make_observation(fused_confidence=0.9)
+        agent = _make_agent(
+            fused_observation=obs,
+            audio_capture_returns=Path("/tmp/fake.wav"),
+            vision_capture_returns=(cap0, cap1),
+        )
+
+        agent._cycle()
+
+        # Audio classifier ran, fuse was called, observation dispatched
+        agent.fuser.fuse.assert_called_once()
+        agent.notifier.dispatch.assert_called_once()
+
+    def test_one_camera_gated_one_passes_still_classifies(self) -> None:
+        """Cam0 gated, cam1 passes → cam1 classified, cycle proceeds normally."""
+        cap0 = _make_capture_result(camera_index=0, gate_passed=False)
+        cap1 = _make_capture_result(camera_index=1, gate_passed=True)
+        obs = _make_observation(fused_confidence=0.9)
+        agent = _make_agent(
+            fused_observation=obs,
+            audio_capture_returns=None,
+            vision_capture_returns=(cap0, cap1),
+        )
+
+        agent._cycle()
+
+        # visual_classifier.predict should have been called for cam1, not cam0
+        calls = agent.visual_classifier.predict.call_args_list
+        assert any(call.kwargs.get("camera_index") == 1 for call in calls)
+        assert all(call.kwargs.get("camera_index") != 0 for call in calls)
+
+    def test_gate_suppressed_observation_has_sentinel_species(self) -> None:
+        """Synthesized gate-suppressed observation uses species_code='NONE'."""
+        cap0 = _make_capture_result(camera_index=0, gate_passed=False)
+        cap1 = _make_capture_result(camera_index=1, gate_passed=False)
+        agent = _make_agent(
+            audio_capture_returns=None,
+            vision_capture_returns=(cap0, cap1),
+        )
+
+        agent._cycle()
+
+        suppressed = agent.notifier.log_suppressed.call_args.args[0]
+        assert suppressed.species_code == "NONE"
+        assert suppressed.fused_confidence == 0.0
+
+    def test_gate_suppressed_observation_retains_image_paths(self) -> None:
+        """Gate-suppressed record includes saved image paths for later review."""
+        cap0 = _make_capture_result(camera_index=0, gate_passed=False)
+        cap1 = _make_capture_result(camera_index=1, gate_passed=False)
+        agent = _make_agent(
+            audio_capture_returns=None,
+            vision_capture_returns=(cap0, cap1),
+        )
+
+        agent._cycle()
+
+        suppressed = agent.notifier.log_suppressed.call_args.args[0]
+        assert suppressed.image_path is not None
+        assert suppressed.image_path_2 is not None
+
+    def test_below_threshold_suppression_sets_gate_reason(self) -> None:
+        """Below-threshold gate now populates gate_reason for ablation analysis."""
+        obs = _make_observation(fused_confidence=0.4)
+        cap = _make_capture_result(camera_index=0)
+        agent = _make_agent(
+            fused_observation=obs,
+            confidence_threshold=0.7,
+            audio_capture_returns=Path("/tmp/fake.wav"),
+            vision_capture_returns=(cap, None),
+        )
+
+        agent._cycle()
+
+        suppressed = agent.notifier.log_suppressed.call_args.args[0]
+        assert suppressed.gate_reason == GATE_REASON_BELOW_CONFIDENCE_THRESHOLD
+
+    def test_cooldown_suppression_sets_gate_reason(self) -> None:
+        """Cooldown gate now populates gate_reason for ablation analysis."""
+        obs = _make_observation(fused_confidence=0.9, species_code="HOFI")
+        cap = _make_capture_result(camera_index=0)
+        agent = _make_agent(
+            fused_observation=obs,
+            cooldown_seconds=30.0,
+            audio_capture_returns=Path("/tmp/fake.wav"),
+            vision_capture_returns=(cap, None),
+        )
+
+        agent._cycle()  # first dispatch
+        agent._cycle()  # second suppressed by cooldown
+
+        suppressed = agent.notifier.log_suppressed.call_args.args[0]
+        assert suppressed.gate_reason == GATE_REASON_SPECIES_COOLDOWN
 
 
 # ── _cycle — dual camera ──────────────────────────────────────────────────────

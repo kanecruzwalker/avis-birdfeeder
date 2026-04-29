@@ -1,0 +1,10 @@
+idx,file_path,true_code,pred_code,confidence,correct,category,audio_conf,fused_conf
+202,C:\Users\Miki\Desktop\Kane\GithubRepositories\avis-birdfeeder-pr1-scaffold\avis-birdfeeder\data\raw\nabirds\images\0856\65ffc4f1e54546f58659475e9f9589fd.jpg,EUST,EUST,0.9999984189481406,True,correct,,
+293,C:\Users\Miki\Desktop\Kane\GithubRepositories\avis-birdfeeder-pr1-scaffold\avis-birdfeeder\data\raw\nabirds\images\0784\61d594335a2a4b62ac10a44bdaf72a91.jpg,HOORI,HOORI,0.9999738799725449,True,correct,,
+427,C:\Users\Miki\Desktop\Kane\GithubRepositories\avis-birdfeeder-pr1-scaffold\avis-birdfeeder\data\raw\nabirds\images\0529\c509f126e1d84f29957d0959cd63e9c0.jpg,MODO,MODO,0.9999687865521403,True,correct,,
+318,C:\Users\Miki\Desktop\Kane\GithubRepositories\avis-birdfeeder-pr1-scaffold\avis-birdfeeder\data\raw\nabirds\images\0796\38b89f74c89b412e9797f82b0d9fd85a.jpg,HOSP,WCSP,0.9600168834214173,False,incorrect,,
+394,C:\Users\Miki\Desktop\Kane\GithubRepositories\avis-birdfeeder-pr1-scaffold\avis-birdfeeder\data\raw\nabirds\images\0852\9dc8f2c524a04256a7f7b46685a1f12c.jpg,MOCH,AMRO,0.9341894779405332,False,incorrect,,
+466,C:\Users\Miki\Desktop\Kane\GithubRepositories\avis-birdfeeder-pr1-scaffold\avis-birdfeeder\data\raw\nabirds\images\0888\da1dfa9838c5486881db8c4e8c922eae.jpg,SPTO,HOSP,0.9254195684994004,False,incorrect,,
+287,C:\Users\Miki\Desktop\Kane\GithubRepositories\avis-birdfeeder-pr1-scaffold\avis-birdfeeder\data\raw\nabirds\images\0991\e9c21e8aec05461b8d7609a6dcfa743c.jpg,HOORI,HOORI,0.6867240189557603,True,fusion_save,0.9935836493968964,0.8554968156983851
+437,C:\Users\Miki\Desktop\Kane\GithubRepositories\avis-birdfeeder-pr1-scaffold\avis-birdfeeder\data\raw\nabirds\images\0867\112630bcab3044b88b819d55a0504a39.jpg,OCWA,OCWA,0.6752159893423397,True,fusion_save,0.9867364764213562,0.8465522572357989
+137,C:\Users\Miki\Desktop\Kane\GithubRepositories\avis-birdfeeder-pr1-scaffold\avis-birdfeeder\data\raw\nabirds\images\0928\0a71032759fb401db8cd81a1d35628a3.jpg,BLPH,BLPH,0.6649560708664536,True,fusion_save,0.9938318729400635,0.845837762006939

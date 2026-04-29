@@ -84,8 +84,11 @@ EnvironmentFile=/mnt/data/avis-birdfeeder/.env
 ExecStart=/mnt/data/avis-venv/bin/python -m src.agent.experiment_orchestrator
 Restart=on-failure
 RestartSec=15
+KillSignal=SIGTERM
+TimeoutStopSec=15
 StandardOutput=journal
 StandardError=journal
+
 
 [Install]
 WantedBy=multi-user.target
