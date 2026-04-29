@@ -84,14 +84,31 @@ Versioning follows [Semantic Versioning](https://semver.org/).
     "Show suppressed" toggle (the route's previous `bool | None`
     contract docstring claimed this behavior but FastAPI rejected
     non-bool values — small route fix to match the contract).
+  - PR 7: timeline + gallery + detail views. Three new view modules
+    in `src/web/static/views/` plus a shared filter bar (window /
+    species / suppressed) reused between timeline and gallery.
+    `timeline.js` renders one SVG marker per observation on a
+    horizontal time axis; markers are anchor links to the detail
+    view, color-coded by confidence band, half-size + greyed when
+    suppressed. `gallery.js` fetches cropped thumbnails into a
+    responsive auto-fill grid (~160 px tiles), with an overlay
+    showing species, confidence, and timestamp. `detail.js` mounts
+    on the parameterized hash route `#/detail/<id>`, fetches the
+    record from `/api/observations/{id}` for the metadata panel,
+    and renders an image-tab strip (cropped / annotated / full)
+    that lazy-loads each variant via `/api/observations/{id}/image/
+    {variant}` and falls back to a "not available" message on 404.
+    Router upgraded to parse `#/<view>/<id>` so detail can be
+    deep-linked. Topbar nav extended with Timeline + Gallery links.
 - New tests: 16 in `tests/web/test_box_cache.py` (TTL, fade,
   thread-safety), 10 in `tests/util/test_frame_annotator.py`
   (round-trip, alpha fast-path, pixel sanity, robustness), 6 in
   `tests/vision/test_capture_preview.py` (publish-path integration
-  with fake stream-buffer + box-source), 11 in
-  `tests/web/test_routes_pages.py` (HTML shell, static bundle,
-  auth boundary), 2 added to `tests/web/test_routes_observations.py`
-  (`dispatched=all` tri-state, 422 on garbage). 288 total tests
+  with fake stream-buffer + box-source), 13 in
+  `tests/web/test_routes_pages.py` (HTML shell incl. all view
+  sections + nav links, static bundle, auth boundary), 2 added to
+  `tests/web/test_routes_observations.py` (`dispatched=all`
+  tri-state, 422 on garbage). 290 total tests
   passing across web, util, vision (excluding torch-heavy modules),
   data, and labeler-auth suites. Pure additive change to
   `src/vision/capture.py` (+94 lines, 0 deletions); 59 existing

@@ -15,6 +15,8 @@
       <nav class="topbar-nav">
         <a href="#/live" data-nav="live" class="nav-link">Live</a>
         <a href="#/recent" data-nav="recent" class="nav-link">Recent</a>
+        <a href="#/timeline" data-nav="timeline" class="nav-link">Timeline</a>
+        <a href="#/gallery" data-nav="gallery" class="nav-link">Gallery</a>
       </nav>
       <div class="topbar-spacer"></div>
       <div class="agent-chip" id="agent-chip" aria-label="Agent status">
@@ -100,6 +102,102 @@
       </div>
       <div class="recent-load-more">
         <button class="btn" id="recent-load-more" hidden>Load more</button>
+      </div>
+    </section>
+
+    <!-- ── Timeline view: horizontal scrub with markers ────────────────── -->
+    <section class="view view-timeline" data-view="timeline">
+      <div class="view-header">
+        <h1>Timeline</h1>
+        <span class="muted" id="timeline-count">—</span>
+      </div>
+      <div class="filter-bar" data-filter-bar="timeline">
+        <div class="filter-field">
+          <label for="timeline-window">Window</label>
+          <select id="timeline-window" data-filter="window">
+            <option value="1h">last 1 hour</option>
+            <option value="6h">last 6 hours</option>
+            <option value="24h" selected>last 24 hours</option>
+            <option value="7d">last 7 days</option>
+            <option value="30d">last 30 days</option>
+          </select>
+        </div>
+        <div class="filter-field">
+          <label for="timeline-species">Species</label>
+          <input id="timeline-species" data-filter="species" type="text"
+                 maxlength="4" autocapitalize="characters" autocomplete="off"
+                 placeholder="any" />
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="timeline-show-suppressed" data-filter="suppressed" />
+          <span>Show suppressed</span>
+        </label>
+      </div>
+      <div class="timeline-stage" id="timeline-stage">
+        <svg class="timeline-svg" id="timeline-svg" aria-label="Detection markers"></svg>
+        <div class="empty-state" id="timeline-empty" hidden>No detections in this window.</div>
+      </div>
+    </section>
+
+    <!-- ── Gallery view: grid of cropped thumbnails ────────────────────── -->
+    <section class="view view-gallery" data-view="gallery">
+      <div class="view-header">
+        <h1>Gallery</h1>
+        <span class="muted" id="gallery-count">—</span>
+      </div>
+      <div class="filter-bar" data-filter-bar="gallery">
+        <div class="filter-field">
+          <label for="gallery-window">Window</label>
+          <select id="gallery-window" data-filter="window">
+            <option value="1h">last 1 hour</option>
+            <option value="6h">last 6 hours</option>
+            <option value="24h" selected>last 24 hours</option>
+            <option value="7d">last 7 days</option>
+            <option value="30d">last 30 days</option>
+          </select>
+        </div>
+        <div class="filter-field">
+          <label for="gallery-species">Species</label>
+          <input id="gallery-species" data-filter="species" type="text"
+                 maxlength="4" autocapitalize="characters" autocomplete="off"
+                 placeholder="any" />
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="gallery-show-suppressed" data-filter="suppressed" />
+          <span>Show suppressed</span>
+        </label>
+      </div>
+      <div class="gallery-grid" id="gallery-grid">
+        <div class="empty-state" id="gallery-empty">Loading…</div>
+      </div>
+      <div class="recent-load-more">
+        <button class="btn" id="gallery-load-more" hidden>Load more</button>
+      </div>
+    </section>
+
+    <!-- ── Detail view: single observation, three image tabs + metadata ── -->
+    <section class="view view-detail" data-view="detail">
+      <div class="detail-toolbar">
+        <a href="#/recent" class="btn-link" id="detail-back">← Back</a>
+        <span class="muted" id="detail-id">—</span>
+      </div>
+      <div class="detail-grid" id="detail-grid">
+        <div class="detail-image-wrap">
+          <div class="image-tabs" role="tablist" aria-label="Image variant">
+            <button type="button" class="image-tab" role="tab" data-variant="cropped" aria-selected="true">Cropped</button>
+            <button type="button" class="image-tab" role="tab" data-variant="annotated" aria-selected="false">Annotated</button>
+            <button type="button" class="image-tab" role="tab" data-variant="full" aria-selected="false">Full</button>
+          </div>
+          <div class="detail-image-stage">
+            <img id="detail-image" alt="" />
+            <div class="detail-image-fallback" id="detail-image-fallback" hidden>
+              Image not available for this variant.
+            </div>
+          </div>
+        </div>
+        <aside class="detail-meta" id="detail-meta">
+          <div class="empty-state" id="detail-empty">Loading…</div>
+        </aside>
       </div>
     </section>
 

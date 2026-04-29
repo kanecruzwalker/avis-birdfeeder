@@ -11,6 +11,9 @@
 
 import { mountLive, refreshLive } from "/static/views/live.js";
 import { mountRecent } from "/static/views/recent.js";
+import { mountTimeline, refreshTimeline } from "/static/views/timeline.js";
+import { mountGallery, refreshGallery } from "/static/views/gallery.js";
+import { mountDetail, openDetail } from "/static/views/detail.js";
 
 // ── Token bootstrap ───────────────────────────────────────────────────────────
 
@@ -157,35 +160,46 @@ function showToast(message, { tone = "info", durationMs = 3000 } = {}) {
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────
+//
+// Hash routes:
+//   #/live           — live preview + status sidebar
+//   #/recent         — paginated card list
+//   #/timeline       — horizontal SVG scrub
+//   #/gallery        — grid of cropped thumbnails
+//   #/detail/<id>    — single observation + image tabs
 
-const VIEWS = ["live", "recent"];
+const VIEWS = ["live", "recent", "timeline", "gallery", "detail"];
 const DEFAULT_VIEW = "live";
 
-function currentView() {
-  const hash = window.location.hash.replace(/^#\//, "");
-  if (VIEWS.includes(hash)) return hash;
-  return DEFAULT_VIEW;
+function parseHash() {
+  const raw = window.location.hash.replace(/^#\//, "");
+  if (!raw) return { view: DEFAULT_VIEW, id: null };
+  const [view, id] = raw.split("/");
+  if (!VIEWS.includes(view)) return { view: DEFAULT_VIEW, id: null };
+  return { view, id: id || null };
 }
 
-function setView(view) {
+function setRoute({ view, id }) {
   els.body.dataset.view = view;
-  if (view === "live") {
-    refreshLive();
-  }
+  if (view === "live") refreshLive();
+  if (view === "timeline") refreshTimeline();
+  if (view === "gallery") refreshGallery();
+  if (view === "detail" && id) openDetail(id);
 }
 
 function bindRouter() {
-  window.addEventListener("hashchange", () => setView(currentView()));
+  window.addEventListener("hashchange", () => setRoute(parseHash()));
   document.querySelectorAll("[data-nav]").forEach((el) => {
     el.addEventListener("click", (event) => {
       const target = el.dataset.nav;
-      if (VIEWS.includes(target)) {
+      if (VIEWS.includes(target) && target !== "detail") {
         event.preventDefault();
-        if (window.location.hash !== `#/${target}`) {
-          window.location.hash = `#/${target}`;
+        const targetHash = `#/${target}`;
+        if (window.location.hash !== targetHash) {
+          window.location.hash = targetHash;
         } else {
           // Clicking the active link refreshes its data.
-          setView(target);
+          setRoute({ view: target, id: null });
         }
       }
     });
@@ -227,12 +241,17 @@ function boot() {
   }
 
   bindRouter();
-  setView(currentView());
 
   // Mount view modules. They take an api object + the toast function so they
   // don't have to know how auth works.
-  mountLive({ api, toast: showToast });
-  mountRecent({ api, toast: showToast });
+  const ctx = { api, toast: showToast };
+  mountLive(ctx);
+  mountRecent(ctx);
+  mountTimeline(ctx);
+  mountGallery(ctx);
+  mountDetail(ctx);
+
+  setRoute(parseHash());
 
   // Initial agent-chip update; then poll every 30 s. Cheap call (cached store).
   pollStatus();

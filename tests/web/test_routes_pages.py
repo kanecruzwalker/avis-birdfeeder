@@ -53,6 +53,22 @@ class TestIndex:
         assert "/static/styles.css" in body
         assert "/static/app.js" in body
 
+    def test_shell_has_all_view_sections(self, client):
+        """All five views must be wired into the shell so the router
+        finds them when their hash route activates. This catches the
+        regression where a view module was added but the section
+        wasn't (hash route would no-op silently)."""
+        body = client.get("/").text
+        for view in ("live", "recent", "timeline", "gallery", "detail"):
+            assert f'data-view="{view}"' in body, f"missing section for {view}"
+
+    def test_shell_navigation_includes_all_views(self, client):
+        """Topbar links must exist for every primary view so users
+        can switch between them without typing the hash."""
+        body = client.get("/").text
+        for view in ("live", "recent", "timeline", "gallery"):
+            assert f'data-nav="{view}"' in body, f"missing nav link for {view}"
+
     def test_root_does_not_require_token(self, client):
         # No token header — shell still renders.
         r = client.get("/")
@@ -92,7 +108,14 @@ class TestStatic:
         assert "mountLive" in r.text  # imported from views/live.js
 
     def test_view_modules_served(self, client):
-        for path in ("/static/views/live.js", "/static/views/recent.js"):
+        view_paths = (
+            "/static/views/live.js",
+            "/static/views/recent.js",
+            "/static/views/timeline.js",
+            "/static/views/gallery.js",
+            "/static/views/detail.js",
+        )
+        for path in view_paths:
             r = client.get(path)
             assert r.status_code == 200, f"{path} not served"
             assert "javascript" in r.headers["content-type"]
