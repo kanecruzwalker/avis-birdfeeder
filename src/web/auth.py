@@ -1,9 +1,9 @@
-"""Token authentication for the labeling-assistant review UI.
+"""Token authentication for the Avis web dashboard.
 
 Thin re-export of :mod:`src.util.web_auth`, which is shared with
-:mod:`src.web.auth`. Both surfaces use the same ``AVIS_WEB_TOKEN``
-secret and the same header / query-param transport, so the logic
-lives in one place.
+``tools.labeler.ui.auth``. Keeping a module at this path means
+existing call sites (``from src.web.auth import RequireToken``)
+keep working; the actual logic lives in one place.
 
 See the shared module for token-transport conventions, configuration
 errors, and FastAPI integration details.
