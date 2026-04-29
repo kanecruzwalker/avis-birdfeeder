@@ -1,35 +1,30 @@
-"""Observation image-variant endpoints (PR 4).
+"""Observation image-variant endpoints.
 
 ``GET /api/observations/{id}/image/{variant}``
     Where ``{variant}`` is one of ``cropped``, ``full``, ``annotated``.
-    Returns the corresponding PNG file from the agent's capture
-    directory.
+    Returns the corresponding PNG from the agent's capture directory.
 
 Path resolution per variant:
 
-    cropped    — ``observation.image_path``. Always saved by
-                 ``VisionCapture._process_frame`` when motion gate
-                 fires, so this is populated for every observation
-                 (dispatched and suppressed) that had a capture.
+    cropped    — ``observation.image_path``. Saved by
+                 ``VisionCapture._process_frame`` whenever motion
+                 fires, so populated for every observation (dispatched
+                 and suppressed) that had a capture.
 
-    full       — ``observation.image_path_full``. Only saved on
-                 dispatched observations after PR 4 (the agent's
-                 ``_save_dispatch_image_variants`` helper writes it
-                 right before the notifier hands off). Suppressed
-                 records and pre-PR-4 records have this as ``None`` →
-                 404.
+    full       — ``observation.image_path_full``. Saved only on
+                 dispatched observations by the agent's
+                 ``_save_dispatch_image_variants`` helper. Suppressed
+                 records have this as ``None`` → 404.
 
     annotated  — derived from ``image_path_full`` by swapping the
-                 ``_full`` stem suffix for ``_annotated``. Only
-                 actually written to disk when YOLO mode produced a
-                 box, so the file may be missing even when
-                 ``image_path_full`` is set → 404.
+                 ``_full`` stem suffix for ``_annotated``. Written
+                 only when YOLO mode produced a box, so the file
+                 may be missing even when ``image_path_full`` is set
+                 → 404.
 
-404 cases (all return 404 with a descriptive ``detail``):
-    - Observation ID malformed or unknown.
-    - The variant's path field on the observation is ``None``.
-    - The path is set but the file is missing on disk (e.g., the
-      capture directory was rotated out from under the dashboard).
+404 cases (all with a descriptive ``detail``): unknown / malformed
+observation ID; variant's path field is ``None``; path set but file
+missing on disk.
 
 Auth: same token wall as the rest of ``/api/*``.
 """

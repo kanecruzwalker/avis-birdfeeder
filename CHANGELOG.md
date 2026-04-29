@@ -12,7 +12,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 - **Phase 8C — web dashboard backend** (`feat/web-dashboard`, three commits).
-  - PR 1 (`aca13d4`): FastAPI scaffold under `src/web/` with `AVIS_WEB_TOKEN`
+  - PR 1 (`c06d325`): FastAPI scaffold under `src/web/` with `AVIS_WEB_TOKEN`
     middleware (header or `?token=` query, `hmac.compare_digest`), `/health`
     as the only public route, and an independent `scripts/avis-web.service`
     systemd unit so stopping the dashboard never touches the agent. CLI
