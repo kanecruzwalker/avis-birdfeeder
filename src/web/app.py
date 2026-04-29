@@ -31,6 +31,8 @@ from fastapi import FastAPI
 from .observation_store import ObservationStore
 from .routes import observations as observations_routes
 from .routes import status as status_routes
+from .routes import stream as stream_routes
+from .stream_buffer import StreamBuffer
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +49,10 @@ _DEFAULT_OBSERVATIONS_PATH = Path("logs/observations.jsonl")
 # ── App factory ───────────────────────────────────────────────────────────────
 
 
-def create_app(observations_path: Path | None = None) -> FastAPI:
+def create_app(
+    observations_path: Path | None = None,
+    stream_buffer: StreamBuffer | None = None,
+) -> FastAPI:
     """Build and configure a FastAPI app for the web dashboard.
 
     Args:
@@ -56,6 +61,14 @@ def create_app(observations_path: Path | None = None) -> FastAPI:
             mtime changes — the dashboard never writes to it. Tests
             point this at a tmp file. ``None`` falls back to
             ``logs/observations.jsonl`` relative to cwd.
+        stream_buffer: Optional shared :class:`StreamBuffer` produced
+            by the agent's ``VisionCapture``. When set, ``/api/stream``
+            and ``/api/frame`` serve live preview frames from it; when
+            ``None``, those endpoints return 503. The dashboard runs
+            as its own systemd unit independent of the agent, so in
+            production the buffer is wired in only when both run in
+            the same process (a future PR adds the cross-process
+            bridge for the split-process layout).
 
     Returns:
         A configured FastAPI app. Auth (``AVIS_WEB_TOKEN``) is enforced
@@ -93,6 +106,21 @@ def create_app(observations_path: Path | None = None) -> FastAPI:
     # — uptime accuracy to the second is plenty for a status chip.
     app.state.start_time = time.time()
 
+    # Live preview ring buffer (PR 3). May be None when the dashboard
+    # runs without an in-process VisionCapture; the /api/stream and
+    # /api/frame routes 503 in that case rather than failing the
+    # whole factory. Tests pass an explicit StreamBuffer instance
+    # (or a thin mock) to exercise the routes.
+    app.state.stream_buffer = stream_buffer
+
+    # /api/stream uses this as the per-frame wait timeout on its
+    # buffer subscription. Default is comfortable for the production
+    # 5fps publish cadence; tests override to a short value so the
+    # streaming generator returns control promptly when the test
+    # client exits the response context (the threadpool task can
+    # only cancel cleanly between condvar waits).
+    app.state.stream_wait_timeout = 5.0
+
     # ── Routes ────────────────────────────────────────────────────────────────
 
     # status_routes owns /health (unauth) and /api/status (auth).
@@ -101,6 +129,11 @@ def create_app(observations_path: Path | None = None) -> FastAPI:
 
     # observations_routes owns /api/observations and /api/observations/{id}.
     app.include_router(observations_routes.router)
+
+    # stream_routes owns /api/stream and /api/frame. Both endpoints
+    # 503 when app.state.stream_buffer is None, so it's always safe
+    # to mount.
+    app.include_router(stream_routes.router)
 
     logger.info(
         "Avis web dashboard app created (version=%s, observations_path=%s)",

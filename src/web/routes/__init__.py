@@ -12,6 +12,6 @@ Modules
 ``chat``         — ``/api/ask``  (PR 8)
 """
 
-from . import observations, status
+from . import observations, status, stream
 
-__all__ = ["observations", "status"]
+__all__ = ["observations", "status", "stream"]
