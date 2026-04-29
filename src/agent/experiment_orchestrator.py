@@ -570,6 +570,34 @@ def main() -> None:
     logger.info("Avis ExperimentOrchestrator starting from systemd.")
 
     orchestrator = ExperimentOrchestrator.from_config("configs")
+
+    # Cross-process MJPEG bridge: when AVIS_STREAM_SHM is set on this
+    # process (and the dashboard process), the agent's VisionCapture
+    # publishes annotated preview JPEGs into a shared-memory segment
+    # that the dashboard's pump thread reads from. The dashboard's
+    # /api/stream route then serves frames from the agent process.
+    # When the env var is unset, the agent publishes nowhere — same
+    # as pre-bridge behaviour.
+    import os as _os  # noqa: PLC0415 — lazy so unrelated imports aren't moved
+
+    shm_name = _os.environ.get("AVIS_STREAM_SHM", "").strip()
+    if shm_name:
+        try:
+            from src.web.shared_frame_bridge import SharedFramePublisher  # noqa: PLC0415
+
+            publisher = SharedFramePublisher(shm_name)
+            orchestrator.agent.vision_capture.attach_preview_sink(publisher)
+            logger.info(
+                "Cross-process MJPEG bridge enabled (AVIS_STREAM_SHM=%r).", shm_name
+            )
+        except Exception as exc:  # noqa: BLE001 — bridge failure shouldn't block agent
+            logger.warning(
+                "Could not attach SHM publisher %r — agent runs without preview "
+                "(/api/stream stays 503 in the dashboard): %s",
+                shm_name,
+                exc,
+            )
+
     orchestrator.run()
 
 

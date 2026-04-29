@@ -34,47 +34,72 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import uvicorn
 import yaml
+from dotenv import load_dotenv
 
 from .app import create_app
 from .auth import AuthConfigError, get_configured_token
+from .box_cache import BoxCache
+from .shared_frame_bridge import SegmentNotFound, SharedFrameSubscriber
 from .stream_buffer import StreamBuffer
 
 logger = logging.getLogger(__name__)
 
 
-# ── .env loading ──────────────────────────────────────────────────────────────
+_CONFIGS_DIR = Path("configs")
 
 
-def _load_dotenv(path: Path) -> None:
-    """Load ``KEY=VALUE`` pairs from a ``.env`` file into ``os.environ``.
+def _maybe_build_analyst() -> Any | None:
+    """Instantiate :class:`BirdAnalystAgent` if GEMINI_API_KEY is set.
 
-    We don't pull in python-dotenv as a dependency for this — the
-    format we accept is the simple subset already used by the rest of
-    the project: lines of ``KEY=VALUE``, ignore blank lines and ``#``
-    comments. Quoted values have surrounding quotes stripped. Existing
-    environment variables take precedence — ``.env`` only fills gaps.
+    Returns ``None`` when no key is configured, when ``configs/`` is
+    absent, or when import / construction raises (the LLM stack is
+    optional — the dashboard must keep booting either way).
+    The import is deferred so missing langchain/google-genai installs
+    don't break ``python -m src.web --help``.
     """
-    if not path.exists():
-        return
-    with path.open(encoding="utf-8") as fh:
-        for raw in fh:
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            key = key.strip()
-            value = value.strip()
-            # Strip matching surrounding quotes
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-                value = value[1:-1]
-            # Existing env wins
-            if key not in os.environ:
-                os.environ[key] = value
+    if not os.environ.get("GEMINI_API_KEY"):
+        return None
+    if not _CONFIGS_DIR.exists():
+        logger.warning("GEMINI_API_KEY set but %s missing — chat disabled.", _CONFIGS_DIR)
+        return None
+    try:
+        from src.agent.bird_analyst_agent import BirdAnalystAgent
+    except Exception as exc:  # noqa: BLE001 — any import error means LLM stack missing
+        logger.warning("Could not import BirdAnalystAgent — chat disabled: %s", exc)
+        return None
+    try:
+        return BirdAnalystAgent.from_config(_CONFIGS_DIR)
+    except Exception as exc:  # noqa: BLE001 — config or LLM init failure shouldn't block boot
+        logger.warning("BirdAnalystAgent init failed — chat disabled: %s", exc)
+        return None
+
+
+def _maybe_attach_shm_subscriber(
+    shm_name: str,
+    stream_buffer: StreamBuffer,
+) -> SharedFrameSubscriber | None:
+    """Attach the SHM bridge if ``AVIS_STREAM_SHM`` is set and the segment exists.
+
+    Returns ``None`` when the env var is unset (in-process mode) or
+    when the segment doesn't exist yet (agent hasn't started). The
+    dashboard keeps booting either way; ``/api/stream`` returns 503
+    until a publisher comes up.
+    """
+    if not shm_name:
+        return None
+    try:
+        subscriber = SharedFrameSubscriber(shm_name)
+    except SegmentNotFound:
+        return None
+    except Exception as exc:  # noqa: BLE001 — bridge failure shouldn't block boot
+        logger.warning("Could not attach SHM subscriber %r: %s", shm_name, exc)
+        return None
+    subscriber.start_pump(stream_buffer)
+    return subscriber
 
 
 # ── observations.jsonl resolution ────────────────────────────────────────────
@@ -177,8 +202,9 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    # 1. Load .env (silent if missing — not required for tests)
-    _load_dotenv(args.env_file)
+    # 1. Load .env (silent if missing — not required for tests).
+    #    override=False matches the prior behavior: existing env wins.
+    load_dotenv(args.env_file, override=False)
 
     # 2. Check the token before binding the socket — fail with a clear
     #    message at startup instead of returning 500 on the first
@@ -192,46 +218,69 @@ def main(argv: list[str] | None = None) -> int:
     # 3. Pick the observations.jsonl location
     obs_path = _resolve_observations_path(args.observations_path)
 
-    # 4. Show a startup banner so the operator can grab the URL
+    # 4. Show a startup banner so the operator can grab the URL.
+    #    The token is NEVER printed in full — banner output goes to
+    #    stdout (and on the Pi, into the systemd journal), where it
+    #    can be screen-shared, copy-pasted, or shoulder-surfed. The
+    #    operator who started the process already has the token from
+    #    ``.env``; we only show a fingerprint here so they can confirm
+    #    the right one was loaded. See the risk table in
+    #    ``docs/investigations/web-dashboard-2026-04-28.md``
+    #    ("Token leaks in chat history or logs").
     masked = token[:4] + "…" + token[-4:] if len(token) > 8 else "***"
     print()
     print("=" * 64)
     print("  Avis web dashboard")
     print("=" * 64)
     print(f"  bind:    http://{args.host}:{args.port}")
-    print(f"  token:   {masked}  (set AVIS_WEB_TOKEN)")
+    print(f"  token:   {masked}  (set AVIS_WEB_TOKEN; full value not shown)")
     print(f"  obs:     {obs_path}  (exists={obs_path.exists()})")
     if args.host == "127.0.0.1":
-        print(f"  url:     http://localhost:{args.port}/?token={token}")
+        print(f"  url:     http://localhost:{args.port}/?token=<your AVIS_WEB_TOKEN>")
     else:
         print(
-            f"  url:     http://<this-host>:{args.port}/?token={token}\n"
+            f"  url:     http://<this-host>:{args.port}/?token=<your AVIS_WEB_TOKEN>\n"
             f"           (Tailscale/LAN mode — anyone with the URL "
             f"and token can access)"
         )
+    shm_name = os.environ.get("AVIS_STREAM_SHM", "").strip()
     print(
-        f"  stream:  http://{args.host}:{args.port}/api/stream  (503 until a publisher is wired in)"
+        f"  stream:  http://{args.host}:{args.port}/api/stream  "
+        + (f"(SHM bridge → {shm_name!r})" if shm_name else "(503 until a publisher is wired in)")
     )
     print(f"  health:  http://{args.host}:{args.port}/health  (no token required)")
     print("=" * 64)
     print()
 
-    # 5. Build the app. The factory is cheap so tests can construct
-    #    it freely.
-    #
-    #    The stream buffer is allocated unconditionally so the API
-    #    contract is stable: /api/stream + /api/frame are always
-    #    mounted, and they 503 cleanly when no publisher is wired
-    #    in. In production with avis-web.service running standalone
-    #    (no in-process VisionCapture) that's the steady state until
-    #    the cross-process bridge lands. When something later wants
-    #    to publish (e.g., a future agent-side thread or an MQTT
-    #    bridge), the buffer is already there.
+    # 5. Build the app. Stream buffer + box cache are allocated
+    #    unconditionally so the API contract is stable: routes 503
+    #    cleanly when no in-process publisher exists. The analyst is
+    #    opt-in via GEMINI_API_KEY — when absent, /api/ask returns 503.
+    #    If AVIS_STREAM_SHM is set, attach the cross-process bridge
+    #    and pump frames from the agent's shared-memory segment into
+    #    the local StreamBuffer; the /api/stream route is unchanged.
     stream_buffer = StreamBuffer()
+    box_cache = BoxCache()
+    analyst = _maybe_build_analyst()
+    if analyst is None:
+        print("  chat:    /api/ask returns 503  (set GEMINI_API_KEY to enable)")
+    else:
+        print("  chat:    /api/ask enabled  (BirdAnalystAgent loaded)")
+
+    shm_subscriber = _maybe_attach_shm_subscriber(shm_name, stream_buffer)
+    if shm_name and shm_subscriber is None:
+        print(f"  bridge:  AVIS_STREAM_SHM={shm_name!r} set but segment not found yet —")
+        print("           the dashboard will keep returning 503 on /api/stream.")
+        print("           Start the agent (avis.service) to create the segment.")
+    elif shm_subscriber is not None:
+        print(f"  bridge:  shared-memory pump active (segment {shm_name!r}).")
+    print()
     try:
         app = create_app(
             observations_path=obs_path,
             stream_buffer=stream_buffer,
+            box_cache=box_cache,
+            analyst=analyst,
         )
     except Exception as exc:  # noqa: BLE001 — surface any startup error cleanly
         print(f"ERROR: failed to build app: {exc}", file=sys.stderr)

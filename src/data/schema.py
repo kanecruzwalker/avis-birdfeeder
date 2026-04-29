@@ -1,24 +1,15 @@
-"""
-src/data/schema.py
+"""Shared data models for the Avis system.
 
-Shared data models for the Avis system.
+Single source of truth for data shapes passed between modules:
+audio and vision pipelines emit ``ClassificationResult``; fusion
+consumes two of those and emits ``BirdObservation``; agent and
+notifier consume ``BirdObservation``.
 
-This is the single source of truth for data shapes passed between modules.
-Both the audio and visual pipelines produce ClassificationResult objects.
-The fusion module consumes two ClassificationResults and produces a BirdObservation.
-The agent and notifier consume BirdObservation objects.
+No ML dependencies here — this module must import cleanly in any
+environment.
 
-No ML dependencies here — this module must import cleanly in any environment.
-
-Phase 5 additions:
-    BirdObservation.visual_result_2   — secondary camera classification result
-    BirdObservation.detection_box     — bounding box stub for Phase 6 detector
-    BirdObservation.estimated_depth_cm — stereo depth stub for Phase 6
-    BirdObservation.estimated_size_cm  — stereo size stub for Phase 6
-    BirdObservation.stereo_calibrated  — whether stereo calibration was applied
-
-All new fields are optional with None defaults — fully backward compatible.
-Existing tests, logs, and serialized observations are unaffected.
+Field-evolution rule: optional fields with ``None`` defaults so
+existing serialized records keep parsing.
 """
 
 from __future__ import annotations
@@ -49,7 +40,7 @@ def _utcnow() -> datetime:
 GATE_REASON_NO_BIRD_DETECTED = "no_bird_detected"
 """The bird-presence detector returned no detection; classifier was skipped.
 Set by BirdAgent._cycle when both cameras' CaptureResults have gate_passed=False
-AND no audio detection is available. Introduced in Branch 2."""
+AND no audio detection is available."""
 
 GATE_REASON_BELOW_CONFIDENCE_THRESHOLD = "below_confidence_threshold"
 """The fused confidence was below the agent's confidence_threshold.
@@ -132,26 +123,10 @@ class ClassificationResult(BaseModel):
 
 
 class BirdObservation(BaseModel):
-    """
-    A confirmed bird observation — the fused output passed to notify and log.
+    """A confirmed bird observation — the fused output of the pipeline.
 
-    Produced by:
-        src.fusion.combiner
-
-    Consumed by:
-        src.notify.notifier
-        src.agent.bird_agent (for logging)
-
-    Phase 5 fields (visual_result_2):
-        Secondary camera classification result. When both cameras classify
-        successfully, the fuser picks the higher-confidence visual result
-        as visual_result and stores the other here for the record.
-
-    Phase 6 stub fields (detection_box, estimated_depth_cm, estimated_size_cm,
-    stereo_calibrated):
-        Reserved for the detection + stereo pipeline. All default to None/False
-        in Phase 5 — adding them now means Phase 6 is purely additive with no
-        schema changes required.
+    Produced by ``src.fusion.combiner``; consumed by
+    ``src.notify.notifier`` and logged by ``src.agent.bird_agent``.
     """
 
     species_code: str = Field(..., description="Fused species identifier.")
@@ -213,6 +188,19 @@ class BirdObservation(BaseModel):
         default=None,
         description="Local path to the captured frame image from secondary camera, if saved.",
     )
+    image_path_full: str | None = Field(
+        default=None,
+        description=(
+            "Local path to the full uncropped frame from the primary camera, "
+            "if saved. Populated only on dispatched observations when the "
+            "agent persists the full-frame variant for the dashboard; "
+            "suppressed observations have this as None. "
+            "The annotated variant (full frame with the YOLO bounding box "
+            "drawn over it) is saved alongside on disk when "
+            "detection_box is set; its path is derived from this one by "
+            "swapping the '_full' stem suffix for '_annotated'."
+        ),
+    )
     audio_path: str | None = Field(
         default=None,
         description="Local path to the captured audio clip, if saved.",
@@ -248,51 +236,47 @@ class BirdObservation(BaseModel):
             "Relationship to the `dispatched` field:\n"
             "  dispatched=True   → gate_reason MUST be None\n"
             "  dispatched=False  → gate_reason SHOULD be set\n"
-            "  Legacy pre-Branch-2 suppressed records may have "
+            "  Legacy suppressed records pre-dating this field may have "
             "dispatched=False and gate_reason=None; treat these as\n"
             "  'below_confidence_threshold' or 'species_cooldown' based on "
             "context (fused_confidence vs threshold).\n"
             "\n"
-            "Introduced in Branch 2 (Phase 8 bird-presence gate). Backward "
-            "compatible — old records deserialize with gate_reason=None."
+            "Backward compatible — old records deserialize with gate_reason=None."
         ),
     )
 
-    # ── Phase 6 stub fields — stereo depth and detection ─────────────────────
-    # These fields are intentionally None/False in Phase 5. They exist now so
-    # that Phase 6 (detection + stereo pipeline) requires zero schema changes.
-    # StereoEstimator and the detection pipeline populate these fields when active.
+    # ── Detection + stereo fields ────────────────────────────────────────────
+    # Populated by the detection pipeline + StereoEstimator when active;
+    # None/False otherwise.
     detection_box: tuple[int, int, int, int] | None = Field(
         default=None,
         description=(
             "Bounding box (x, y, width, height) of the detected bird in the "
-            "primary camera frame. None in Phase 5 classification-only mode. "
-            "Populated in Phase 6 when object detector (YOLO via Hailo) is added. "
-            "Required for per-bird stereo depth estimation."
+            "primary camera frame, when the object detector ran. Required "
+            "for per-bird stereo depth estimation."
         ),
     )
     estimated_depth_cm: float | None = Field(
         default=None,
         description=(
             "Stereo depth estimate — distance from cameras to bird in cm. "
-            "None until Phase 6 stereo calibration and StereoEstimator are active. "
-            "Requires detection_box to be set."
+            "Requires detection_box to be set and stereo calibration active."
         ),
     )
     estimated_size_cm: float | None = Field(
         default=None,
         description=(
             "Estimated bird body length in cm, derived from stereo disparity "
-            "and detection_box dimensions. None until Phase 6. "
-            "Useful as an auxiliary feature for species disambiguation "
-            "(e.g. House Finch vs Lesser Goldfinch at similar distances)."
+            "and detection_box dimensions. Useful as an auxiliary feature for "
+            "species disambiguation (e.g. House Finch vs Lesser Goldfinch at "
+            "similar distances)."
         ),
     )
     stereo_calibrated: bool = Field(
         default=False,
         description=(
             "True if stereo calibration matrices were loaded and applied "
-            "when computing depth for this observation. Always False in Phase 5."
+            "when computing depth for this observation."
         ),
     )
 

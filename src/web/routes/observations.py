@@ -160,17 +160,17 @@ def list_observations(
         ),
     ] = None,
     dispatched: Annotated[
-        bool | None,
+        str | None,
         Query(
             description=(
                 "``true`` (default) returns only dispatched "
                 "observations — the user-visible stream. ``false`` "
-                "returns only suppressed observations. Omit the "
-                "param entirely (or pass any value other than "
-                "true/false) for the full stream."
+                "returns only suppressed observations. ``all`` "
+                "returns both."
             ),
+            pattern="^(true|false|all)$",
         ),
-    ] = True,
+    ] = "true",
     limit: Annotated[
         int,
         Query(
@@ -204,11 +204,20 @@ def list_observations(
     if to_ts is not None and to_ts.tzinfo is None:
         to_ts = to_ts.replace(tzinfo=UTC)
 
+    # Tri-state coercion: "all" → None (store treats None as "both").
+    dispatched_filter: bool | None
+    if dispatched == "true":
+        dispatched_filter = True
+    elif dispatched == "false":
+        dispatched_filter = False
+    else:  # "all"
+        dispatched_filter = None
+
     records, next_cursor = _store(request).query(
         from_ts=from_ts,
         to_ts=to_ts,
         species=species,
-        dispatched=dispatched,
+        dispatched=dispatched_filter,
         limit=capped_limit,
         cursor=cursor,
     )

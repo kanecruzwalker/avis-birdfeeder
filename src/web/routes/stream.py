@@ -88,7 +88,6 @@ def _buffer(request: Request) -> StreamBuffer | None:
 
 @router.get(
     "/frame",
-    response_class=Response,
     responses={
         200: {
             "description": "Latest preview JPEG.",
