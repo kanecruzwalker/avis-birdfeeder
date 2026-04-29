@@ -192,20 +192,28 @@ def main(argv: list[str] | None = None) -> int:
     # 3. Pick the observations.jsonl location
     obs_path = _resolve_observations_path(args.observations_path)
 
-    # 4. Show a startup banner so the operator can grab the URL
+    # 4. Show a startup banner so the operator can grab the URL.
+    #    The token is NEVER printed in full — banner output goes to
+    #    stdout (and on the Pi, into the systemd journal), where it
+    #    can be screen-shared, copy-pasted, or shoulder-surfed. The
+    #    operator who started the process already has the token from
+    #    ``.env``; we only show a fingerprint here so they can confirm
+    #    the right one was loaded. See the risk table in
+    #    ``docs/investigations/web-dashboard-2026-04-28.md``
+    #    ("Token leaks in chat history or logs").
     masked = token[:4] + "…" + token[-4:] if len(token) > 8 else "***"
     print()
     print("=" * 64)
     print("  Avis web dashboard")
     print("=" * 64)
     print(f"  bind:    http://{args.host}:{args.port}")
-    print(f"  token:   {masked}  (set AVIS_WEB_TOKEN)")
+    print(f"  token:   {masked}  (set AVIS_WEB_TOKEN; full value not shown)")
     print(f"  obs:     {obs_path}  (exists={obs_path.exists()})")
     if args.host == "127.0.0.1":
-        print(f"  url:     http://localhost:{args.port}/?token={token}")
+        print(f"  url:     http://localhost:{args.port}/?token=<your AVIS_WEB_TOKEN>")
     else:
         print(
-            f"  url:     http://<this-host>:{args.port}/?token={token}\n"
+            f"  url:     http://<this-host>:{args.port}/?token=<your AVIS_WEB_TOKEN>\n"
             f"           (Tailscale/LAN mode — anyone with the URL "
             f"and token can access)"
         )
