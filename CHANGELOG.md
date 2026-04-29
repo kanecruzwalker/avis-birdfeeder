@@ -123,6 +123,23 @@ Versioning follows [Semantic Versioning](https://semver.org/).
     `styles.css`. No SSE / streaming — wait-for-full response keeps
     the wire shape and frontend simple, and matches the investigation
     doc's success criterion (under 30 seconds round-trip).
+  - PR 9: deployment finish — Tailscale + ngrok docs and demo script.
+    New `scripts/avis-web-ngrok.sh` opens an ngrok HTTP tunnel to
+    port 8000 and prints a clipboardable demo URL with `?token=`
+    filled in; refuses to start if `AVIS_WEB_TOKEN` is unset (an
+    unauthenticated ngrok URL is a footgun), polls ngrok's local
+    API for the public URL, and tears down on Ctrl-C. New
+    `docs/WEB_DASHBOARD.md` is the operator guide: auth model and
+    SPA token handoff flow, Pi install (env + systemd unit + verify),
+    Tailscale per-friend invite + revoke, ngrok demo discipline,
+    daily SSH commands, agent-chip semantics, and troubleshooting
+    for the issues we've actually hit (weak token, 503 on stream
+    pre-bridge, Magic-DNS-only-on-tailnet, stale `localStorage`
+    token after rotation, missing `GEMINI_API_KEY` on chat).
+    `README.md` gets a short "Web dashboard" section pointing at the
+    new doc; `PI_DEPLOYMENT.md` gets a "Web dashboard" subsection
+    between the systemd watchdog and troubleshooting blocks. No
+    code changes; pure docs + script.
 - New tests: 16 in `tests/web/test_box_cache.py` (TTL, fade,
   thread-safety), 10 in `tests/util/test_frame_annotator.py`
   (round-trip, alpha fast-path, pixel sanity, robustness), 6 in
